@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# Local configuration (contains the database password)
+config.ini
+
+# Generated reports and backups
+*.xlsx
+*.xlsm
+*.pdf
+epbs_backup_*
+
+# Editor / OS
+.vscode/
+.idea/
+Thumbs.db
+desktop.ini

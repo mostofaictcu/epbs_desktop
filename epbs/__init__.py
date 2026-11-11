@@ -1,0 +1,1 @@
+"""EPBS Desktop - PostgreSQL edition."""
