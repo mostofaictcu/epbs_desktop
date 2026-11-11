@@ -6,6 +6,7 @@ from PySide6.QtCore import QObject, Signal
 from . import services
 from .config import AppConfig
 from .db import Database, DbError
+from .jobs import JobQueue
 
 
 class AppContext(QObject):
@@ -18,6 +19,7 @@ class AppContext(QObject):
         self.cfg = cfg
         self.db = db
         self.user = user or {}
+        self.jobs = JobQueue(self)
 
     @property
     def user_id(self) -> str:

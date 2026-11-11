@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import sys
+import time
 import traceback
 from datetime import date
+from pathlib import Path
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
@@ -11,19 +13,20 @@ from PySide6.QtWidgets import (
     QPushButton, QTabWidget, QVBoxLayout, QWidget,
 )
 
-from . import excelio, services
+from . import services
 from .config import APP_NAME, APP_VERSION, DEFAULT_LOGO_JPG, DEFAULT_LOGO_SVG, load_config
 from .context import AppContext
 from .db import Database, DbError
 from .theme import apply_theme
 from .ui.bills import BillsTab
-from .ui.common import confirm_save, error, info, warn
+from .ui.common import confirm, confirm_save, error, info, warn
 from .ui.consumers import ConsumersTab
 from .ui.dashboard import DashboardTab
-from .ui.documents import print_report
+from .ui.export_jobs import database_excel
 from .ui.generate import BillGenerateTab
 from .ui.home import HomeTab
 from .ui.icons import make_icon
+from .ui.jobs import JobLogDock
 from .ui.login import LoginDialog
 from .ui.logo import logo_pixmap
 from .ui.masters import MasterDataTab
@@ -122,6 +125,21 @@ class MainWindow(QMainWindow):
         self.home.navigate.connect(self._go_section)
         self.home.action.connect(self._home_action)
 
+        # Background export queue: the log dock opens itself when a job starts.
+        self.jobs_dock = JobLogDock(self.ctx.jobs, self)
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.jobs_dock)
+        self.jobs_dock.hide()
+        self.user_status = QLabel()
+        self.user_status.setObjectName("muted")
+        self.user_status.setContentsMargins(6, 0, 8, 0)
+        self.statusBar().addPermanentWidget(self.user_status)
+        self.job_status = QLabel("Exports: idle")
+        self.job_status.setObjectName("muted")
+        self.job_status.setContentsMargins(8, 0, 6, 0)
+        self.statusBar().addPermanentWidget(self.job_status)
+        self.ctx.jobs.pending_changed.connect(self._job_pending)
+        self.ctx.jobs.finished.connect(self._job_finished)
+
         self._build_menu()
         self._refresh_status()
         repaired = int(getattr(self.ctx.db, "sequences_repaired", 0) or 0)
@@ -131,7 +149,7 @@ class MainWindow(QMainWindow):
                 15000,
             )
         else:
-            self.statusBar().showMessage("Ready")
+            self.statusBar().showMessage("Ready", 5000)
 
         self.consumers.refresh()
         self.bills.refresh()
@@ -152,6 +170,13 @@ class MainWindow(QMainWindow):
         self.full_screen_action.setCheckable(True)
         self.full_screen_action.setShortcut("F11")
         self.full_screen_action.triggered.connect(self._toggle_full_screen)
+        view_menu.addSeparator()
+        self.job_log_action = view_menu.addAction("Job log")
+        self.job_log_action.setCheckable(True)
+        self.job_log_action.setShortcut("Ctrl+J")
+        self.job_log_action.setChecked(False)
+        self.job_log_action.triggered.connect(self._toggle_job_log)
+        self.jobs_dock.visibilityChanged.connect(self.job_log_action.setChecked)
 
         help_menu = self.menuBar().addMenu("&Help")
         about = help_menu.addAction("About")
@@ -172,11 +197,35 @@ class MainWindow(QMainWindow):
 
     def _refresh_status(self) -> None:
         paper = self.cfg.paper
-        self.statusBar().showMessage(
+        self.user_status.setText(
             f"User: {self.ctx.user_name} ({self.ctx.user.get('access_type') or '-'})   |   "
             f"Database: {self.cfg.db.label()}   |   Printer: {self.cfg.printer or 'system default'}   |   "
             f"Paper: {paper}   |   Ink saver: on"
         )
+        self.user_status.setToolTip(self.user_status.text())
+
+    def _toggle_job_log(self, checked: bool = False) -> None:
+        self.jobs_dock.setVisible(bool(checked))
+
+    def _job_pending(self, count: int) -> None:
+        current = self.ctx.jobs.current
+        if count:
+            text = f"Exports: {count} in queue"
+            if current:
+                text += f" · running {current}"
+        else:
+            text = "Exports: idle"
+        self.job_status.setText(text)
+        self.job_status.setToolTip("Background exports · View → Job log (Ctrl+J)")
+
+    def _job_finished(self, name: str, summary: str, ok: bool, path: str, seconds: str) -> None:
+        if ok:
+            note = f"{name} finished in {seconds} s"
+            if path:
+                note += f" — {Path(path).name}"
+            self.statusBar().showMessage(note, 15000)
+        else:
+            self.statusBar().showMessage(f"{name} failed — {summary}", 20000)
 
     def _tab_changed(self, index: int) -> None:
         widget = self.tabs.widget(index)
@@ -218,12 +267,12 @@ class MainWindow(QMainWindow):
             f"epbs_backup_{date.today():%Y%m%d}.xlsx", "Excel files (*.xlsx)")
         if not path:
             return
-        try:
-            excelio.backup_database(self.db, path, self.cfg.db.label())
-        except Exception as exc:
-            error(self, str(exc))
-            return
-        info(self, f"Backup written to:\n{path}")
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        label = self.cfg.db.label()
+        self.ctx.jobs.submit(
+            "Full database Excel backup",
+            lambda log: database_excel(self.cfg, label, path, log))
 
     def _about(self) -> None:
         logo = ""
@@ -241,6 +290,18 @@ class MainWindow(QMainWindow):
         )
 
     def closeEvent(self, event) -> None:
+        if self.ctx.jobs.busy:
+            if not confirm(self, "Exports are still being generated.\n\n"
+                                 "The window will close once they have finished.",
+                           "Exports running"):
+                event.ignore()
+                return
+            self.jobs_dock.show()
+            self.statusBar().showMessage("Finishing queued exports before closing…")
+            deadline = time.time() + 180
+            while self.ctx.jobs.busy and time.time() < deadline:
+                QApplication.processEvents()
+                time.sleep(0.05)
         try:
             self.db.close()
         finally:

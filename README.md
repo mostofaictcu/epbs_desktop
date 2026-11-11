@@ -24,6 +24,9 @@ Features:
 - Reports: bills register, collections, dues by consumer/area/type, consumer
   list, monthly billing summary.
 - Excel: full combined database workbook, per-report export, consumer import.
+- **Background export queue**: Excel and PDF files are generated one at a time
+  in a worker thread while a dockable job log shows progress and results, so
+  the window never freezes.
 - Record lists (consumers, bills, consumer history and detail reports) use
   **keyset (cursor) pagination**, so only one page is loaded at a time.
 - Legacy MySQL → PostgreSQL migration tool that preserves ids and passwords.
@@ -249,6 +252,33 @@ Choose a report, set the optional date/status/month filters, then:
 
 Report exports are monochrome, with no fills and thin borders.
 
+### Background exports (job queue)
+
+Excel and PDF exports never block the window. Every export – report Excel,
+report PDF, bill PDF, statement PDF and the full database workbook – is put on
+a queue and generated **one at a time, in the order you asked for them**, by a
+background worker. You can keep searching, editing and generating bills while
+a large PDF renders.
+
+- The **Job log** panel opens automatically at the bottom of the window as soon
+  as something is queued. It shows the queue state, a progress bar, and a
+  timestamped line for every step: *Queued*, *Started*, each work message,
+  *Done … (3.4 s) — PDF saved: bills_register.pdf · 800 rows · 295 KB* or
+  *FAILED*.
+- **Open last file** opens the file that was just written; **Clear log** empties
+  the view (the queue keeps running).
+- **View → Job log** (or `Ctrl+J`) hides and shows the panel. Closing it does
+  not stop the queue; it reopens on the next export.
+- The status bar shows the queue length while jobs are pending and a short
+  note with the elapsed time when one finishes.
+- A failing export is reported in the log and the queue carries on with the
+  next job – one bad file never stops the rest.
+- If you close the window while exports are pending, EPBS asks first and then
+  finishes them before exiting.
+
+**Print** (the physical printer) is still done immediately on the window, so
+the Windows print dialog behaves normally; only file generation is queued.
+
 ## 5. Printing and ink saving
 
 All documents are generated as HTML and rendered by Qt:
@@ -433,10 +463,13 @@ EPBS_Desktop/
     services.py            business logic, reports, Excel datasets, auth
     printing.py            ink-saver HTML + Qt print/PDF
     excelio.py             workbook export, report export, consumer import
+    jobs.py                background FIFO queue (one worker thread)
     theme.py               Qt style
     ui/
       home.py              Windows-style start screen (tiles)
       icons.py             vector icons drawn with QPainter
+      jobs.py              job log dock (queue status, log, open last file)
+      export_jobs.py       queued Excel/PDF work functions
       masters.py           master data editor (types, areas, groups, ...)
       ...                  tabs and dialogs
   tools/

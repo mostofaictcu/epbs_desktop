@@ -6,9 +6,10 @@ from PySide6.QtWidgets import (
     QComboBox, QFileDialog, QHBoxLayout, QLabel, QLineEdit, QPushButton, QVBoxLayout, QWidget,
 )
 
-from .. import excelio, services
-from .common import Pager, Table, date_edit, error, info, money, to_date, warn
+from .. import services
+from .common import Pager, Table, date_edit, error, money, to_date, warn
 from .documents import print_report
+from .export_jobs import database_excel, report_excel, report_pdf
 
 REPORTS = [
     ("bills", "Bills register"),
@@ -165,15 +166,13 @@ class ReportsTab(QWidget):
             "Excel files (*.xlsx)")
         if not path:
             return
-        try:
-            result = self._all_result()
-            excelio.export_report(path, result["title"], result["headers"],
-                                  result["rows"], result.get("footer"),
-                                  result.get("money_cols"))
-        except Exception as exc:
-            error(self, str(exc))
-            return
-        info(self, f"Exported:\n{path}")
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        filters = self._filters()
+        title = self._result.get("title") or "Report"
+        self.ctx.jobs.submit(
+            f"Report Excel — {title}",
+            lambda log: report_excel(self.ctx.cfg, filters, path, log))
 
     def export_all(self) -> None:
         path, _ = QFileDialog.getSaveFileName(
@@ -181,17 +180,33 @@ class ReportsTab(QWidget):
             "Excel files (*.xlsx)")
         if not path:
             return
-        try:
-            excelio.backup_database(self.ctx.db, path, self.ctx.cfg.db.label())
-        except Exception as exc:
-            error(self, str(exc))
-            return
-        info(self, f"Full database exported to:\n{path}\n\n"
-                   "Sheets: consumers, bills, details, readings, payments, masters, company, audit.")
+        if not path.lower().endswith(".xlsx"):
+            path += ".xlsx"
+        self.ctx.jobs.submit(
+            "Full database Excel backup",
+            lambda log: database_excel(self.ctx.cfg, self.ctx.cfg.db.label(), path, log))
 
     def _print(self, as_pdf: bool) -> None:
         if not self._result:
             warn(self, "Run a report first.")
+            return
+        if as_pdf:
+            path, _ = QFileDialog.getSaveFileName(
+                self, "Save report PDF",
+                f"{self.kind.currentData()}_{date.today():%Y%m%d}.pdf", "PDF files (*.pdf)")
+            if not path:
+                return
+            if not path.lower().endswith(".pdf"):
+                path += ".pdf"
+            filters = self._filters()
+            subtitle = self._subtitle()
+            company = self.ctx.company()
+            font_pt = self.ctx.cfg.font_pt
+            title = self._result.get("title") or "Report"
+            self.ctx.jobs.submit(
+                f"Report PDF — {title}",
+                lambda log: report_pdf(self.ctx.cfg, filters, subtitle, company,
+                                       font_pt, path, log))
             return
         try:
             result = self._all_result()

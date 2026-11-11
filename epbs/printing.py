@@ -234,6 +234,37 @@ def _page_size(paper: str) -> QPageSize:
     return QPageSize(QPageSize.PageSizeId.A4)
 
 
+def pdf_from_html(html_text: str, path: str | Path, *, paper: str = "A4",
+                   document_name: str = "EPBS document") -> tuple[bool, str]:
+    """Render ``html_text`` to a PDF file.
+
+    Unlike :func:`print_document` this uses no dialog and no cursor, so it can
+    run in a worker thread and keep the window responsive.
+    """
+    if not QApplication.instance():
+        return False, "Qt application is not running."
+
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setDocName(document_name)
+    printer.setFullPage(False)
+    printer.setPageSize(_page_size(paper))
+    printer.setPageMargins(QMarginsF(8, 8, 8, 8), QPageLayout.Unit.Millimeter)
+    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    printer.setOutputFileName(str(path))
+
+    doc = QTextDocument()
+    doc.setDocumentMargin(0)
+    doc.setDefaultFont(QFont("Segoe UI", max(6, int(round(8)))))
+    doc.setHtml(html_text)
+    doc.setPageSize(QSizeF(printer.pageRect(QPrinter.Unit.Point).size()))
+    doc.print_(printer)
+
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return False, f"PDF was not created: {p}"
+    return True, str(p)
+
+
 def print_document(html_text: str, *, paper: str = "A4", printer_name: str = "",
                    pdf_path: str | Path | None = None, show_dialog: bool = False,
                    document_name: str = "EPBS document") -> tuple[bool, str]:
