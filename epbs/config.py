@@ -91,7 +91,6 @@ class DbConfig:
 class AppConfig:
     db: DbConfig = field(default_factory=DbConfig)
     company_id: str = "1001"
-    meter_rent_default: float = 30.0
     paper: str = "A4"
     font_pt: float = 8.0
     printer: str = ""              # empty = system default printer
@@ -115,7 +114,6 @@ class AppConfig:
         }
         cp["app"] = {
             "company_id": self.company_id,
-            "meter_rent_default": f"{self.meter_rent_default:.2f}",
             "paper": self.paper,
             "font_pt": f"{self.font_pt:.1f}",
             "printer": self.printer,
@@ -158,10 +156,6 @@ def load_config(path: Path | None = None) -> AppConfig:
     db.connect_timeout = int(_get(cp, "database", "connect_timeout", 5) or 5)
 
     cfg.company_id = _get(cp, "app", "company_id", "1001") or "1001"
-    try:
-        cfg.meter_rent_default = float(_get(cp, "app", "meter_rent_default", 30) or 30)
-    except ValueError:
-        cfg.meter_rent_default = 30.0
     paper = _get(cp, "app", "paper", "A4")
     cfg.paper = paper if paper in PAPERS else "A4"
     try:

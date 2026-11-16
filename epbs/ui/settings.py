@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
 from ..config import PAPERS, AppConfig, DbConfig, load_config, resolve_logo
 from ..db import Database
 from .. import services
-from .common import confirm_save, error, info, money, warn
+from .common import confirm_save, error, info, warn
 from .logo import logo_pixmap
 
 
@@ -225,16 +225,17 @@ class SettingsTab(QWidget):
         # app -----------------------------------------------------------
         app_group = QGroupBox("Billing defaults")
         af = QFormLayout(app_group)
-        self.meter_rent = QDoubleSpinBox()
-        self.meter_rent.setRange(0, 100000)
-        self.meter_rent.setDecimals(2)
-        self.meter_rent.setValue(ctx.cfg.meter_rent_default)
         self.company_id = QLineEdit(ctx.cfg.company_id)
         self.auto_schema = QCheckBox("Create missing tables automatically on connect")
         self.auto_schema.setChecked(ctx.cfg.auto_schema)
-        af.addRow("Default meter rent", self.meter_rent)
         af.addRow("Company id", self.company_id)
         af.addRow("", self.auto_schema)
+        rent_hint = QLabel("Meter rent is set on each consumer type (default 0) and is added "
+                           "once to every bill. It can still be changed on the Generate bill "
+                           "page for an individual bill.")
+        rent_hint.setObjectName("muted")
+        rent_hint.setWordWrap(True)
+        af.addRow(rent_hint)
         root.addWidget(app_group)
 
         # company -------------------------------------------------------
@@ -376,13 +377,11 @@ class SettingsTab(QWidget):
         cfg.font_pt = self.font_pt.value()
         cfg.bill_copy_label = self.copy_label.text().strip()
         cfg.show_print_dialog = self.show_dialog.isChecked()
-        cfg.meter_rent_default = self.meter_rent.value()
         cfg.company_id = self.company_id.text().strip() or "1001"
         cfg.auto_schema = self.auto_schema.isChecked()
         if not confirm_save(self, "Save these application settings to config.ini?\n\n"
                                   f"Printer: {cfg.printer or 'system default'}\n"
-                                  f"Paper: {cfg.paper} · font {cfg.font_pt} pt\n"
-                                  f"Default meter rent: {money(cfg.meter_rent_default)}"):
+                                  f"Paper: {cfg.paper} · font {cfg.font_pt} pt"):
             return
         try:
             cfg.save()

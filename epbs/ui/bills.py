@@ -74,9 +74,11 @@ class BillDetailDialog(QDialog):
 
         self.tabs = QTabWidget()
         self.details = Table()
+        self.slabs = Table()
         self.readings = Table()
         self.payments = Table()
         self.tabs.addTab(self.details, "Bill lines")
+        self.tabs.addTab(self.slabs, "Slab calculation")
         self.tabs.addTab(self.readings, "Meter reading")
         self.tabs.addTab(self.payments, "Payments")
         root.addWidget(self.tabs, 1)
@@ -119,6 +121,12 @@ class BillDetailDialog(QDialog):
             [[d.get("bill_month"), d.get("bill_details"), d.get("bill_status"), d.get("bill_amount")]
              for d in data["details"]],
             money_cols={3},
+        )
+        self.slabs.load(
+            ["Slab", "From unit", "To unit", "Units", "Rate", "Amount"],
+            [[s.get("slab_no"), s.get("from_unit"), s.get("to_unit") or "No limit",
+              s.get("units"), s.get("rate"), s.get("amount")] for s in data.get("slabs") or []],
+            money_cols={4, 5}, right_cols={1, 2, 3},
         )
         self.readings.load(
             ["Prev date", "Prev unit", "Present date", "Present unit", "Units", "Rate"],

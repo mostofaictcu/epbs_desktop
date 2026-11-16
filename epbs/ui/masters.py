@@ -2,8 +2,8 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout, QHeaderView, QLabel,
-    QLineEdit, QPushButton, QTabWidget, QVBoxLayout, QWidget,
+    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
 from .. import services
@@ -12,7 +12,7 @@ from .common import Table, confirm_delete, confirm_save, error, money, warn
 
 class MasterDialog(QDialog):
     def __init__(self, title: str, name: str = "", rate: float | None = None,
-                 with_rate: bool = False, parent=None):
+                 with_rate: bool = False, meter_rent: float | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(360)
@@ -26,8 +26,19 @@ class MasterDialog(QDialog):
         self.rate.setRange(0, 100000)
         self.rate.setDecimals(2)
         self.rate.setValue(float(rate or 0))
+        self.meter_rent = QDoubleSpinBox()
+        self.meter_rent.setRange(0, 100000)
+        self.meter_rent.setDecimals(2)
+        self.meter_rent.setValue(float(meter_rent or 0))
+        self.meter_rent.setSuffix(" / bill")
         if with_rate:
-            form.addRow("Rate", self.rate)
+            form.addRow("Flat rate", self.rate)
+            form.addRow("Default meter rent", self.meter_rent)
+            note = QLabel("Slabs are optional. A type with no slabs is billed at the flat rate. "
+                          "Meter rent is added once to every bill and defaults to 0.")
+            note.setObjectName("muted")
+            note.setWordWrap(True)
+            form.addRow("", note)
         root.addLayout(form)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
                                QDialogButtonBox.StandardButton.Cancel)
@@ -41,8 +52,183 @@ class MasterDialog(QDialog):
             return
         self.accept()
 
-    def values(self) -> tuple[str, float | None]:
-        return self.name.text().strip(), (self.rate.value() if self.with_rate else None)
+    def values(self) -> tuple[str, float | None, float | None]:
+        return (self.name.text().strip(),
+                (self.rate.value() if self.with_rate else None),
+                (self.meter_rent.value() if self.with_rate else None))
+
+
+class SlabDialog(QDialog):
+    """Progressive slab tariff editor for one consumer type."""
+
+    def __init__(self, ctx, type_row: dict, parent=None):
+        super().__init__(parent)
+        self.ctx = ctx
+        self.type_id = int(type_row["id"])
+        self.type_name = str(type_row.get("name") or "")
+        self.setWindowTitle(f"Slabs - {self.type_name}")
+        self.resize(620, 430)
+        self._rows: list[dict] = []
+        root = QVBoxLayout(self)
+        head = QLabel(
+            f"<b>{self.type_name}</b> · slab tariff<br>"
+            "Each slab applies to the units above the previous slab's end. "
+            "Example: 500 units with 0-400 @ 7.48 and 401-600 @ 10.20 = "
+            "400 × 7.48 + 100 × 10.20."
+        )
+        head.setWordWrap(True)
+        root.addWidget(head)
+
+        self.table = Table()
+        root.addWidget(self.table, 1)
+
+        form = QFormLayout()
+        row = QHBoxLayout()
+        self.from_unit = QSpinBox()
+        self.from_unit.setRange(0, 100_000_000)
+        self.from_unit.setGroupSeparatorShown(True)
+        self.to_unit = QSpinBox()
+        self.to_unit.setRange(0, 100_000_000)
+        self.to_unit.setGroupSeparatorShown(True)
+        self.to_unit.setSpecialValueText("No upper limit")
+        self.rate = QDoubleSpinBox()
+        self.rate.setRange(0, 100_000)
+        self.rate.setDecimals(2)
+        self.rate.setSingleStep(0.5)
+        row.addWidget(QLabel("From"))
+        row.addWidget(self.from_unit)
+        row.addWidget(QLabel("To"))
+        row.addWidget(self.to_unit)
+        row.addWidget(QLabel("Rate"))
+        row.addWidget(self.rate)
+        form.addRow("Units", row)
+        root.addLayout(form)
+
+        buttons = QHBoxLayout()
+        self.add_btn = QPushButton("Add slab")
+        self.add_btn.setObjectName("primary")
+        self.add_btn.clicked.connect(self._add)
+        self.update_btn = QPushButton("Update selected")
+        self.update_btn.setEnabled(False)
+        self.update_btn.clicked.connect(self._update)
+        self.remove_btn = QPushButton("Remove selected")
+        self.remove_btn.setEnabled(False)
+        self.remove_btn.clicked.connect(self._remove)
+        buttons.addWidget(self.add_btn)
+        buttons.addWidget(self.update_btn)
+        buttons.addWidget(self.remove_btn)
+        buttons.addStretch(1)
+        root.addLayout(buttons)
+
+        hint = QLabel("To = 0 means the last slab has no upper limit. "
+                      "Consumption above the last ended slab continues at that slab's rate.")
+        hint.setObjectName("muted")
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+
+        box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
+                               QDialogButtonBox.StandardButton.Cancel)
+        box.accepted.connect(self._save)
+        box.rejected.connect(self.reject)
+        root.addWidget(box)
+
+        self.table.itemSelectionChanged.connect(self._selected)
+        self._load()
+
+    def _load(self) -> None:
+        try:
+            self._rows = [dict(r) for r in services.type_slabs(self.ctx.db, self.type_id)]
+        except Exception as exc:
+            error(self, str(exc))
+            return
+        self._refresh()
+
+    def _refresh(self) -> None:
+        self._rows = services.normalize_slabs(self._rows) if self._rows else []
+        self.table.load(
+            ["Slab", "From unit", "To unit", "Rate"],
+            [[r.get("slab_no"), r.get("from_unit"),
+              (r.get("to_unit") or "No limit"), r.get("rate")] for r in self._rows],
+            money_cols={3}, right_cols={1, 2},
+        )
+        self.from_unit.setValue(int((self._rows[-1].get("to_unit") or 0) + 1) if self._rows
+                               else 0)
+        self.to_unit.setValue(int((self._rows[-1].get("to_unit") or 0) + 100) if self._rows
+                              else 100)
+        if self._rows:
+            self.rate.setValue(float(self._rows[-1].get("rate") or 0))
+        self.table.clearSelection()
+        self.update_btn.setEnabled(False)
+        self.remove_btn.setEnabled(False)
+
+    def _selected(self) -> None:
+        row = self.table.currentRow()
+        valid = 0 <= row < len(self._rows)
+        self.update_btn.setEnabled(valid)
+        self.remove_btn.setEnabled(valid)
+        if valid:
+            item = self._rows[row]
+            self.from_unit.setValue(int(item.get("from_unit") or 0))
+            self.to_unit.setValue(int(item.get("to_unit") or 0))
+            self.rate.setValue(float(item.get("rate") or 0))
+
+    def _candidate(self) -> dict:
+        return {
+            "from_unit": self.from_unit.value(),
+            "to_unit": self.to_unit.value(),
+            "rate": self.rate.value(),
+        }
+
+    def _apply_rows(self, rows: list[dict]) -> None:
+        try:
+            self._rows = services.normalize_slabs(rows)
+        except Exception as exc:
+            warn(self, str(exc))
+            return
+        self._refresh()
+
+    def _add(self) -> None:
+        self._apply_rows([*self._rows, self._candidate()])
+
+    def _update(self) -> None:
+        row = self.table.currentRow()
+        if not (0 <= row < len(self._rows)):
+            warn(self, "Select a slab first.")
+            return
+        rows = list(self._rows)
+        rows[row] = self._candidate()
+        self._apply_rows(rows)
+
+    def _remove(self) -> None:
+        row = self.table.currentRow()
+        if not (0 <= row < len(self._rows)):
+            warn(self, "Select a slab first.")
+            return
+        rows = list(self._rows)
+        del rows[row]
+        self._apply_rows(rows)
+
+    def _save(self) -> None:
+        try:
+            slabs = services.normalize_slabs(self._rows)
+        except Exception as exc:
+            warn(self, str(exc))
+            return
+        if not confirm_save(
+            self,
+            f"Save {len(slabs)} slab(s) for type {self.type_name}?\n\n"
+            + ("\n".join(f"Slab {s['slab_no']}: {s['from_unit']}-"
+                         f"{s['to_unit'] or 'no limit'} @ {money(s['rate'])}"
+                         for s in slabs) if slabs else "No slabs: flat rate billing.")
+        ):
+            return
+        try:
+            services.save_type_slabs(self.ctx.db, self.type_id, slabs, self.ctx.user_id)
+        except Exception as exc:
+            error(self, str(exc))
+            return
+        self.ctx.notify_change()
+        self.accept()
 
 
 class MasterPane(QWidget):
@@ -73,12 +259,17 @@ class MasterPane(QWidget):
         delete.clicked.connect(self._delete)
         buttons.addWidget(add)
         buttons.addWidget(edit)
+        self.slabs_btn = QPushButton("Slabs...")
+        self.slabs_btn.setToolTip("Edit the progressive slab tariff of the selected consumer type")
+        self.slabs_btn.clicked.connect(self._slabs)
+        self.slabs_btn.setVisible(self.kind == "type")
+        buttons.addWidget(self.slabs_btn)
         buttons.addStretch(1)
         buttons.addWidget(delete)
         root.addLayout(buttons)
 
         hint = QLabel("Changes are saved immediately. An item used by a consumer "
-                      "cannot be deleted.")
+                      "cannot be deleted. Types can use a flat rate or a slab tariff.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -94,17 +285,23 @@ class MasterPane(QWidget):
             return
         headers = ["ID", self._name_header]
         if self.with_rate:
-            headers.append("Rate")
-        headers.append("Used by")
+            headers += ["Flat rate", "Meter rent", "Slabs"]
+            money_cols = {2, 3}
+            right_cols = {4}
+        else:
+            headers.append("Used by")
+            money_cols = set()
+            right_cols = {len(headers) - 1}
         data = []
         for row in self._rows:
             values = [row["id"], row["name"]]
             if self.with_rate:
-                values.append(row.get("rate"))
-            values.append(row.get("used"))
+                values += [row.get("rate"), row.get("meter_rent") or 0,
+                           row.get("slabs") or 0]
+            else:
+                values.append(row.get("used"))
             data.append(values)
-        money_cols = {2} if self.with_rate else set()
-        self.table.load(headers, data, money_cols=money_cols, right_cols={len(headers) - 1})
+        self.table.load(headers, data, money_cols=money_cols, right_cols=right_cols)
         header = self.table.horizontalHeader()
         header.setStretchLastSection(False)
         header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
@@ -120,14 +317,14 @@ class MasterPane(QWidget):
                               parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate = dialog.values()
+        name, rate, meter_rent = dialog.values()
         detail = f"Add {self._name_header.lower()} '{name}'"
         if self.with_rate:
-            detail += f" with rate {rate:.2f}"
+            detail += f" with flat rate {rate:.2f} and meter rent {meter_rent:.2f}"
         if not confirm_save(self, detail + "?"):
             return
         try:
-            services.add_master_row(self.ctx.db, self.kind, name, rate)
+            services.add_master_row(self.ctx.db, self.kind, name, rate, meter_rent)
         except Exception as exc:
             error(self, str(exc))
             return
@@ -140,24 +337,36 @@ class MasterPane(QWidget):
             warn(self, "Select a row first.")
             return
         dialog = MasterDialog(f"Edit {self._name_header.lower()}", str(row["name"]),
-                              float(row.get("rate") or 0), self.with_rate, self)
+                              float(row.get("rate") or 0), self.with_rate,
+                              float(row.get("meter_rent") or 0), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate = dialog.values()
+        name, rate, meter_rent = dialog.values()
         detail = f"Change {self._name_header.lower()} '{row['name']}' to '{name}'"
         if self.with_rate and float(row.get("rate") or 0) != float(rate or 0):
-            detail += f"\n\nRate: {money(row.get('rate'))} → {money(rate)}"
+            detail += f"\n\nFlat rate: {money(row.get('rate'))} → {money(rate)}"
+        if self.with_rate and float(row.get("meter_rent") or 0) != float(meter_rent or 0):
+            detail += f"\nMeter rent: {money(row.get('meter_rent'))} → {money(meter_rent)}"
         if self.kind == "group":
             detail += "\n\nEvery consumer using this group will be updated."
         if not confirm_save(self, detail + "?"):
             return
         try:
-            services.update_master_row(self.ctx.db, self.kind, int(row["id"]), name, rate)
+            services.update_master_row(self.ctx.db, self.kind, int(row["id"]), name, rate,
+                                       meter_rent)
         except Exception as exc:
             error(self, str(exc))
             return
         self.ctx.notify_change()
         self.refresh()
+
+    def _slabs(self) -> None:
+        row = self._selected()
+        if not row:
+            warn(self, "Select a consumer type first.")
+            return
+        if SlabDialog(self.ctx, row, self).exec() == QDialog.DialogCode.Accepted:
+            self.refresh()
 
     def _delete(self) -> None:
         row = self._selected()

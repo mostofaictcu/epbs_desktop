@@ -9,7 +9,6 @@ from .db import Database, DbError
 from .schema import sync_identity_sequences
 from .security import decrypt, encrypt
 
-METER_RENT_DEFAULT = Decimal("30.00")
 PUNISHMENT_EXCLUDED_TYPES = {"BDF", "RES-QUATER"}
 # primary keys that can collide when an imported id sequence lags behind
 def _is_id_collision(exc: Exception) -> bool:
@@ -115,6 +114,175 @@ def masters(db: Database) -> dict[str, list[dict]]:
     }
 
 
+# --------------------------------------------------------------------------
+# slab tariffs (optional, per consumer type)
+# --------------------------------------------------------------------------
+def normalize_slabs(slabs: list[dict]) -> list[dict]:
+    """Validate slab rows and return them ordered with 1-based slab numbers.
+
+    ``to_unit`` is the upper consumption threshold.  ``0`` means "no upper
+    limit" and is only allowed on the last slab.  Thresholds must increase so
+    a unit cannot be billed twice.
+    """
+    rows: list[dict] = []
+    for index, raw in enumerate(slabs or [], start=1):
+        try:
+            start = int(raw.get("from_unit") or 0)
+            end = int(raw.get("to_unit") or 0)
+        except (TypeError, ValueError):
+            raise ValueError(f"Slab {index}: units must be whole numbers.")
+        rate = q2(raw.get("rate"))
+        if start < 0 or end < 0:
+            raise ValueError(f"Slab {index}: units cannot be negative.")
+        if rate < 0:
+            raise ValueError(f"Slab {index}: rate cannot be negative.")
+        if end and end < start:
+            raise ValueError(f"Slab {index}: end unit must be greater than the start unit.")
+        rows.append({"from_unit": start, "to_unit": end, "rate": rate})
+
+    finite = sorted((r for r in rows if r["to_unit"] > 0), key=lambda r: r["to_unit"])
+    unlimited = [r for r in rows if r["to_unit"] == 0]
+    if len(unlimited) > 1:
+        raise ValueError("Only the last slab can have no upper limit.")
+
+    last = 0
+    for row in finite:
+        if row["to_unit"] <= last:
+            raise ValueError(f"Slab ending at {row['to_unit']:,} overlaps the previous slab.")
+        last = row["to_unit"]
+
+    ordered = finite + unlimited
+    for number, row in enumerate(ordered, start=1):
+        row["slab_no"] = number
+    return ordered
+
+
+def type_slabs(db: Database, type_id: int | None) -> list[dict]:
+    """Slab tariff of a consumer type (empty = flat rate billing)."""
+    if not type_id:
+        return []
+    return db.query(
+        """SELECT slab_id, type_id, slab_no, from_unit, to_unit, rate
+             FROM tbl_type_slab
+            WHERE type_id=%s
+            ORDER BY CASE WHEN to_unit = 0 THEN 1 ELSE 0 END, to_unit, slab_no""",
+        (int(type_id),),
+    )
+
+
+def save_type_slabs(db: Database, type_id: int, slabs: list[dict], user_id: str = "",
+                    note: str = "") -> None:
+    """Replace the whole slab tariff of a type."""
+    ordered = normalize_slabs(slabs)
+    with db.tx():
+        old = type_slabs(db, type_id)
+        db.execute("DELETE FROM tbl_type_slab WHERE type_id=%s", (int(type_id),))
+        for row in ordered:
+            db.execute(
+                """INSERT INTO tbl_type_slab (type_id, slab_no, from_unit, to_unit, rate)
+                   VALUES (%s,%s,%s,%s,%s)""",
+                (int(type_id), int(row["slab_no"]), int(row["from_unit"]),
+                 int(row["to_unit"]), q2(row["rate"])),
+            )
+        _audit(db, "tbl_type", str(type_id), "slabs",
+               _slab_text(old), _slab_text(ordered), user_id,
+               note or "Slab tariff updated")
+
+
+def _slab_text(rows: list[dict]) -> str:
+    return "; ".join(
+        f"{int(r.get('from_unit') or 0)}-"
+        f"{int(r.get('to_unit') or 0) if int(r.get('to_unit') or 0) else 'limit'}"
+        f" @ {q2(r.get('rate'))}"
+        for r in rows
+    )
+
+
+def slab_breakdown(units: int, slabs: list[dict]) -> list[dict]:
+    """Split ``units`` across progressive slabs.
+
+    A slab is applied to the part of consumption above the previous slab's
+    upper threshold, so 500 units with 0-400 @ 7.48 and 0-600 @ 10.20 gives
+    400 units at 7.48 and 100 units at 10.20.  Consumption above the last
+    finite threshold continues at the last slab's rate.
+    """
+    units = max(0, int(units or 0))
+    if units <= 0 or not slabs:
+        return []
+    ordered = sorted(
+        slabs,
+        key=lambda s: (int(s.get("to_unit") or 0) == 0, int(s.get("to_unit") or 0),
+                       int(s.get("slab_no") or 0)),
+    )
+    rows: list[dict] = []
+    billed = 0
+    for slab in ordered:
+        end = int(slab.get("to_unit") or 0)
+        rate = q2(slab.get("rate"))
+        if end == 0:
+            portion = units - billed
+            if portion > 0:
+                rows.append(_slab_line(billed, 0, portion, rate, len(rows) + 1))
+                billed = units
+            break
+        if end <= billed:
+            continue
+        portion = min(units, end) - billed
+        if portion > 0:
+            rows.append(_slab_line(billed, end, portion, rate, len(rows) + 1))
+            billed = min(units, end)
+        if billed >= units:
+            break
+    if billed < units and ordered:
+        rate = q2(ordered[-1].get("rate"))
+        rows.append(_slab_line(billed, 0, units - billed, rate, len(rows) + 1))
+    return rows
+
+
+def _slab_line(billed: int, end: int, portion: int, rate: Decimal, slab_no: int) -> dict:
+    return {
+        "slab_no": slab_no,
+        "from_unit": billed + 1 if billed else 0,
+        "to_unit": end,
+        "units": int(portion),
+        "rate": rate,
+        "amount": q2(Decimal(portion) * rate),
+    }
+
+
+def slab_snapshot(definitions: list[dict], lines: list[dict]) -> list[dict]:
+    """Keep every tariff slab in a bill snapshot, including unused upper slabs.
+
+    Zero-unit rows are not printed but let a later recalculation apply the
+    correct rate when a corrected reading moves into a higher slab.
+    """
+    by_no = {int(r.get("slab_no") or 0): r for r in lines}
+    out: list[dict] = []
+    seen: set[int] = set()
+    for index, slab in enumerate(definitions, start=1):
+        number = int(slab.get("slab_no") or index)
+        line = by_no.get(number)
+        out.append({
+            "slab_no": number,
+            "from_unit": int(line.get("from_unit") or 0) if line
+            else int(slab.get("from_unit") or 0),
+            "to_unit": int(line.get("to_unit") or 0) if line
+            else int(slab.get("to_unit") or 0),
+            "units": int(line.get("units") or 0) if line else 0,
+            "rate": q2(line.get("rate") if line else slab.get("rate")),
+            "amount": q2(line.get("amount")) if line else q2(0),
+        })
+        seen.add(number)
+    for line in lines:
+        if int(line.get("slab_no") or 0) not in seen:
+            out.append(line)
+    return out
+
+
+def slab_amount(rows: list[dict]) -> Decimal:
+    return q2(sum((q2(r.get("amount")) for r in rows), Decimal("0")))
+
+
 def sync_consumer_groups(db: Database) -> int:
     """Copy group names used on consumers into tbl_consumer_group."""
     return db.execute(
@@ -155,6 +323,8 @@ SELECT c.con_id, c.con_name, c.con_address, c.meter_no, c.con_contact, c.con_sta
        c.con_group, c.user_id, c.rate_override,
        c.area_id, a.area_details,
        c.type_id, t.type_name, COALESCE(c.rate_override, t.rate, 0)::numeric(12,2) AS rate,
+       t.rate AS type_rate, t.meter_rent AS type_meter_rent,
+       (SELECT count(*) FROM tbl_type_slab ts WHERE ts.type_id = c.type_id) AS slab_count,
        c.dep_id, d.dep_details,
        c.des_id, ds.des_details,
        COALESCE((SELECT SUM(b.total_amount) FROM tbl_bills b
@@ -331,6 +501,30 @@ def unpaid_due(db: Database, con_id: int, exclude_bill_no: int | None = None) ->
     return q2((row or {}).get("s"))
 
 
+def _billing_amount(db: Database, *, type_id, rate_override, fallback_rate,
+                    units: int, rate=None) -> dict:
+    """Price ``units`` with an explicit flat rate, slabs, or the flat type rate.
+
+    An explicit ``rate`` (entered for one bill or a consumer override) always
+    wins and bypasses the type's slab tariff.
+    """
+    if rate is not None:
+        applied = q2(rate)
+        return {"amount": q2(Decimal(units) * applied), "rate": applied,
+                "slabs": [], "tariff_slabs": [], "is_slab": False}
+    if rate_override is None:
+        slabs = type_slabs(db, type_id)
+        if slabs:
+            rows = slab_breakdown(units, slabs)
+            amount = slab_amount(rows)
+            average = q2(Decimal(amount) / Decimal(units)) if units else Decimal("0.00")
+            return {"amount": amount, "rate": average, "slabs": rows,
+                    "tariff_slabs": slabs, "is_slab": True}
+    applied = q2(rate_override if rate_override is not None else fallback_rate)
+    return {"amount": q2(Decimal(units) * applied), "rate": applied,
+            "slabs": [], "tariff_slabs": [], "is_slab": False}
+
+
 def preview_bill(db: Database, con_id: int, present_unit: int, meter_rent=None,
                  rate=None) -> dict:
     consumer = get_consumer(db, con_id)
@@ -341,16 +535,22 @@ def preview_bill(db: Database, con_id: int, present_unit: int, meter_rent=None,
     if present_unit < previous_unit:
         raise ValueError(f"Present unit ({present_unit}) cannot be less than previous unit ({previous_unit}).")
     units = int(present_unit) - previous_unit
-    rate = q2(consumer.get("rate") if rate is None else rate)
-    amount = q2(Decimal(units) * rate)
-    rent = q2(meter_rent if meter_rent is not None else METER_RENT_DEFAULT)
+    tariff = _billing_amount(
+        db, type_id=consumer.get("type_id"), rate_override=consumer.get("rate_override"),
+        fallback_rate=consumer.get("type_rate") if consumer.get("type_rate") is not None
+        else consumer.get("rate"),
+        units=units, rate=rate,
+    )
+    amount = tariff["amount"]
+    rent = q2(meter_rent if meter_rent is not None
+              else consumer.get("type_meter_rent"))
     due = unpaid_due(db, con_id)
     total = q2(amount + due + rent)
     return {
         "consumer": consumer, "previous_unit": previous_unit, "present_unit": int(present_unit),
-        "units": units, "rate": rate, "bill_amount": amount, "due": due,
+        "units": units, "rate": tariff["rate"], "bill_amount": amount, "due": due,
         "meter_rent": rent, "total": total, "previous_date": (prev or {}).get("present_date"),
-        "previous_reading": prev,
+        "previous_reading": prev, "slabs": tariff["slabs"], "is_slab": tariff["is_slab"],
     }
 
 
@@ -429,11 +629,16 @@ def _generate_bill_once(db: Database, *, con_id: int, present_unit: int, present
         units = int(present_unit) - previous_unit
         current_rate = q2(consumer.get("rate_override") if consumer.get("rate_override") is not None
                           else ctype.get("rate"))
-        applied_rate = current_rate if rate is None else q2(rate)
+        tariff = _billing_amount(
+            db, type_id=consumer.get("type_id"),
+            rate_override=consumer.get("rate_override"),
+            fallback_rate=ctype.get("rate"), units=units, rate=rate,
+        )
+        applied_rate = tariff["rate"]
+        amount = tariff["amount"]
         if applied_rate < 0:
             raise ValueError("Rate cannot be negative.")
-        amount = q2(Decimal(units) * applied_rate)
-        rent = q2(meter_rent if meter_rent is not None else METER_RENT_DEFAULT)
+        rent = q2(meter_rent if meter_rent is not None else ctype.get("meter_rent"))
         due = unpaid_due(db, con_id)
         total = q2(amount + due + rent)
         if explicit_ids:
@@ -492,7 +697,16 @@ def _generate_bill_once(db: Database, *, con_id: int, present_unit: int, present
                 (previous_date, previous_unit, present_date, int(present_unit), con_id, bill_no,
                  applied_rate),
             )
-        if save_rate and applied_rate != current_rate:
+        for line in slab_snapshot(tariff.get("tariff_slabs") or [], tariff["slabs"]):
+            db.execute(
+                """INSERT INTO tbl_bill_slab
+                       (bill_no, slab_no, from_unit, to_unit, units, rate, amount)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                (bill_no, int(line["slab_no"]), int(line["from_unit"]),
+                 int(line["to_unit"]), int(line["units"]), q2(line["rate"]),
+                 q2(line["amount"])),
+            )
+        if save_rate and rate is not None and applied_rate != current_rate:
             db.execute("UPDATE tbl_consumer SET rate_override=%s WHERE con_id=%s",
                        (applied_rate, con_id))
             _audit(db, "tbl_consumer", str(con_id), "rate_override",
@@ -537,6 +751,7 @@ def delete_bill(db: Database, bill_no: int) -> None:
             raise ValueError("Bill has a payment record. Delete the payment first.")
         db.execute("DELETE FROM tbl_bills_details WHERE bill_no=%s", (bill_no,))
         db.execute("DELETE FROM tbl_unit WHERE bill_no=%s", (bill_no,))
+        db.execute("DELETE FROM tbl_bill_slab WHERE bill_no=%s", (bill_no,))
         db.execute("DELETE FROM tbl_bills WHERE bill_no=%s", (bill_no,))
 
 
@@ -695,6 +910,16 @@ def count_bills(db: Database, text: str = "", status: str = "", month: str = "",
         f"WHERE {where}", params, default=0) or 0)
 
 
+def bill_slabs(db: Database, bill_no: int, include_empty: bool = False) -> list[dict]:
+    return db.query(
+        """SELECT bill_slab_id, bill_no, slab_no, from_unit, to_unit, units, rate, amount
+             FROM tbl_bill_slab
+            WHERE bill_no=%s AND (%s OR units > 0)
+            ORDER BY slab_no, bill_slab_id""",
+        (bill_no, bool(include_empty)),
+    )
+
+
 def bill_detail(db: Database, bill_no: int) -> dict:
     bill = get_bill(db, bill_no)
     if not bill:
@@ -706,6 +931,7 @@ def bill_detail(db: Database, bill_no: int) -> dict:
         "details": db.query("SELECT * FROM tbl_bills_details WHERE bill_no=%s ORDER BY bill_det_id", (bill_no,)),
         "readings": db.query("SELECT * FROM tbl_unit WHERE bill_no=%s ORDER BY un_id", (bill_no,)),
         "payments": db.query("SELECT * FROM tbl_payment WHERE bill_no=%s ORDER BY payment_id", (bill_no,)),
+        "slabs": bill_slabs(db, bill_no),
     }
 
 
@@ -722,9 +948,28 @@ def recalc_bill(db: Database, bill_no: int, user_id: str = "", note: str = "") -
             raise ValueError("This bill has no meter reading to recalculate.")
         consumer = get_consumer(db, bill.get("con_id")) if bill.get("con_id") else None
         units = int(reading.get("present_unit") or 0) - int(reading.get("previous_unit") or 0)
-        rate = q2(reading.get("rate_applied") if reading.get("rate_applied") is not None
-                  else (consumer or {}).get("rate"))
-        amount = q2(Decimal(units) * rate)
+        snapshot = bill_slabs(db, bill_no, include_empty=True)
+        lines: list[dict] = []
+        if snapshot:
+            lines = slab_breakdown(units, snapshot)
+            amount = slab_amount(lines)
+            rate = q2(Decimal(amount) / Decimal(units)) if units else Decimal("0.00")
+            db.execute("DELETE FROM tbl_bill_slab WHERE bill_no=%s", (bill_no,))
+            for line in slab_snapshot(snapshot, lines):
+                db.execute(
+                    """INSERT INTO tbl_bill_slab
+                           (bill_no, slab_no, from_unit, to_unit, units, rate, amount)
+                       VALUES (%s,%s,%s,%s,%s,%s,%s)""",
+                    (bill_no, int(line["slab_no"]), int(line["from_unit"]),
+                     int(line["to_unit"]), int(line["units"]), q2(line["rate"]),
+                     q2(line["amount"])),
+                )
+            db.execute("UPDATE tbl_unit SET rate_applied=%s WHERE un_id=%s",
+                       (rate, reading.get("un_id")))
+        else:
+            rate = q2(reading.get("rate_applied") if reading.get("rate_applied") is not None
+                      else (consumer or {}).get("rate"))
+            amount = q2(Decimal(units) * rate)
         rent = q2(bill.get("meter_rent"))
         due = unpaid_due(db, bill.get("con_id"), exclude_bill_no=bill_no)
         total = q2(amount + due + rent)
@@ -741,7 +986,7 @@ def recalc_bill(db: Database, bill_no: int, user_id: str = "", note: str = "") -
                str(bill.get("total_amount")), str(total), user_id,
                note or f"Recalculated: {units} units x {rate}")
         return {"units": units, "rate": rate, "bill_amount": amount, "due": due,
-                "meter_rent": rent, "total": total}
+                "meter_rent": rent, "total": total, "slabs": lines}
 
 
 # --------------------------------------------------------------------------
@@ -1097,7 +1342,12 @@ EXPORT_TABLES = [
             present_unit, con_id, bill_no, rate_applied, units FROM tbl_unit ORDER BY un_id"""),
     ("Payments", "tbl_payment", """SELECT payment_id, bill_no, bill_amount, paid_date, con_id, user_id
             FROM tbl_payment ORDER BY payment_id"""),
-    ("Types", "tbl_type", "SELECT type_id, type_name, rate FROM tbl_type ORDER BY type_id"),
+    ("Types", "tbl_type",
+     "SELECT type_id, type_name, rate, meter_rent FROM tbl_type ORDER BY type_id"),
+    ("TypeSlabs", "tbl_type_slab", """SELECT slab_id, type_id, slab_no, from_unit, to_unit,
+            rate FROM tbl_type_slab ORDER BY type_id, slab_no"""),
+    ("BillSlabs", "tbl_bill_slab", """SELECT bill_slab_id, bill_no, slab_no, from_unit,
+            to_unit, units, rate, amount FROM tbl_bill_slab ORDER BY bill_no, slab_no"""),
     ("Areas", "tbl_area", "SELECT area_id, area_details FROM tbl_area ORDER BY area_id"),
     ("Departments", "tbl_department", "SELECT dep_id, dep_details FROM tbl_department ORDER BY dep_id"),
     ("Designations", "tbl_designation", "SELECT des_id, des_details FROM tbl_designation ORDER BY des_id"),
@@ -1182,13 +1432,18 @@ def list_master_rows(db: Database, kind: str) -> list[dict]:
                 "WHERE lower(c.con_group)=lower(m.group_name))")
     else:
         used = f"(SELECT count(*) FROM tbl_consumer c WHERE c.{MASTER_FK[kind]}=m.{idc})"
+    extra = ""
+    if kind == "type":
+        extra = (""", m.meter_rent,
+            (SELECT count(*) FROM tbl_type_slab s WHERE s.type_id=m.type_id) AS slabs""")
     return db.query(
-        f"""SELECT m.{idc} AS id, m.{namec} AS name, {rate}, {used} AS used
+        f"""SELECT m.{idc} AS id, m.{namec} AS name, {rate}{extra}, {used} AS used
               FROM {table} m ORDER BY lower(m.{namec})"""
     )
 
 
-def add_master_row(db: Database, kind: str, name: str, rate=None) -> int:
+def add_master_row(db: Database, kind: str, name: str, rate=None,
+                   meter_rent=None) -> int:
     table, idc, namec, label, has_rate = MASTER_SPECS[kind]
     name = (name or "").strip()[:45]
     if not name:
@@ -1196,14 +1451,16 @@ def add_master_row(db: Database, kind: str, name: str, rate=None) -> int:
     if db.one(f"SELECT {idc} FROM {table} WHERE lower({namec})=lower(%s)", (name,)):
         raise ValueError(f"{label} '{name}' already exists.")
     if has_rate:
-        row = db.one(f"INSERT INTO {table} ({namec}, rate) VALUES (%s,%s) "
-                     f"RETURNING {idc}", (name, q2(rate)))
+        row = db.one(f"INSERT INTO {table} ({namec}, rate, meter_rent) "
+                     f"VALUES (%s,%s,%s) RETURNING {idc}",
+                     (name, q2(rate), q2(meter_rent)))
     else:
         row = db.one(f"INSERT INTO {table} ({namec}) VALUES (%s) RETURNING {idc}", (name,))
     return int(row[idc])
 
 
-def update_master_row(db: Database, kind: str, row_id: int, name: str, rate=None) -> None:
+def update_master_row(db: Database, kind: str, row_id: int, name: str, rate=None,
+                      meter_rent=None) -> None:
     table, idc, namec, label, has_rate = MASTER_SPECS[kind]
     name = (name or "").strip()[:45]
     if not name:
@@ -1224,8 +1481,9 @@ def update_master_row(db: Database, kind: str, row_id: int, name: str, rate=None
                            "WHERE lower(con_group)=lower(%s)",
                            (name, old["group_name"]))
         elif has_rate:
-            db.execute(f"UPDATE {table} SET {namec}=%s, rate=%s WHERE {idc}=%s",
-                       (name, q2(rate), int(row_id)))
+            db.execute(f"UPDATE {table} SET {namec}=%s, rate=%s, meter_rent=%s "
+                       f"WHERE {idc}=%s",
+                       (name, q2(rate), q2(meter_rent), int(row_id)))
         else:
             db.execute(f"UPDATE {table} SET {namec}=%s WHERE {idc}=%s", (name, int(row_id)))
 
@@ -1242,4 +1500,7 @@ def delete_master_row(db: Database, kind: str, row_id: int) -> None:
                          (int(row_id),), default=0)
     if used:
         raise ValueError(f"{label} is used by {used} consumer(s). Change those consumers first.")
-    db.execute(f"DELETE FROM {table} WHERE {idc}=%s", (int(row_id),))
+    with db.tx():
+        if kind == "type":
+            db.execute("DELETE FROM tbl_type_slab WHERE type_id=%s", (int(row_id),))
+        db.execute(f"DELETE FROM {table} WHERE {idc}=%s", (int(row_id),))

@@ -8,12 +8,14 @@ Features:
 
 - Windows-style **Home screen** with large icon tiles for each section, plus
   quick actions (Excel backup, change password, about) and a status strip.
-- **Master data** screen for consumer types/rates, areas, departments,
-  designations and consumer groups (add, rename, delete with usage checks).
+- **Master data** screen for consumer types/rates, optional progressive slab
+  tariffs, per-type meter rent, areas, departments, designations and consumer
+  groups (add, rename, delete with usage checks).
 - Consumer database: search by account number, meter number or name; add,
   edit, delete, Excel import.
 - Bill generation with an on-screen summary of **units used and total price**.
-- Per-consumer rate override and consumer-type rates.
+- Per-consumer rate override, consumer-type flat rates and optional progressive
+  slab tariffs with per-type meter rent.
 - **Unit change / rate change** screen with audit trail, bill recalculation and
   optional re-pricing of open bills.
 - Payments, dues and receipts.
@@ -153,9 +155,18 @@ login dialog and Home banner plays the animation built into `logo.svg` once
 **Master data** tab edits the lists used by the consumer form. The **Settings**
 tab has an **Edit master data...** shortcut to the same screen:
 
-- **Types** – name and unit rate (for example `RES-QUATER` 7.84).
+- **Types** – name, flat rate, default meter rent and optional slabs (for
+  example `RES-QUATER`). A type with no slabs is billed at the flat rate.
 - **Areas**, **Departments**, **Designations** – plain name lists.
 - **Groups** – consumer groups, with a count of how many consumers use each one.
+
+Slab tariffs are progressive: select a type and press **Slabs...**. Each slab
+has a unit range and a rate. For 500 units with `0-400 @ 7.48` and
+`401-600 @ 10.20`, the bill is `400 × 7.48 + 100 × 10.20 = 4,012.00`. The last
+slab may be left open-ended (To = *No upper limit*); otherwise consumption above
+the last ended slab continues at that slab's rate. Meter rent is a fixed amount
+added once to the bill and defaults to `0` per type. A per-consumer rate
+override bypasses the slab tariff and bills that consumer at one flat rate.
 
 Use **Add**, **Edit** (or double-click) and **Delete**. Names are matched
 case-insensitively, so adding an existing name selects the existing row instead
@@ -203,18 +214,23 @@ values are created automatically. Existing accounts are updated.
 1. Enter the meter number or account number and press search.
 2. The consumer details and the last reading are shown.
 3. Enter the present reading and date.
-4. **Rate** starts at the consumer's current rate (override or type rate) and
-   can be changed for this bill. **Save this rate for this customer** (ticked
-   by default) also stores it as the consumer's own rate; clear the box to use
-   the rate only for this bill.
-5. The summary shows previous/present units, **units used**, rate, bill amount,
-   previous due, meter rent and **total payable**.
+4. **Rate** starts at the consumer's current rate (override or type rate). When
+   the type has a slab tariff, the rate is shown as the average for the units
+   used and the summary lists each slab. Tick **Bill at a flat rate** to ignore
+   the slab tariff for this bill. **Save this rate for this customer** (ticked
+   by default) also stores a flat rate as the consumer's own rate; clear the
+   box to use the rate only for this bill.
+5. The summary shows previous/present units, **units used**, the slab breakdown
+   (or flat rate), bill amount, previous due, meter rent and **total payable**.
+   Meter rent starts at the selected type's own default (normally `0`).
 6. **Generate bill** saves the bill; **Print** / **PDF** output the ink-saver
    bill. A bill can also be printed later from **Bills & payments**.
 
-The rate used at generation time is stored on the reading, so later rate
-changes do not silently alter old bills. A rate saved from this screen is
-written to `tbl_audit` like any other rate change.
+The rate used at generation time is stored on the reading (for a slab bill this
+is the average rate), so later rate changes do not silently alter old bills.
+The applied slab lines are kept in `tbl_bill_slab` for reprints and
+recalculation. A rate saved from this screen is written to `tbl_audit` like any
+other rate change.
 
 ### Unit change / rate change
 
@@ -247,8 +263,8 @@ Choose a report, set the optional date/status/month filters, then:
 - **Print** – print the report with the same ink-saver style.
 - **Backup workbook** (also **File → Backup database to Excel...**) – one
   workbook with every table: Consumers, Bills, BillDetails, UnitReadings,
-  Payments, Types, Areas, Departments, Designations, ConsumerGroups, Company,
-  Users, Audit.
+  Payments, Types, TypeSlabs, BillSlabs, Areas, Departments, Designations,
+  ConsumerGroups, Company, Users, Audit.
 
 Report exports are monochrome, with no fills and thin borders.
 
@@ -310,7 +326,9 @@ document renders reliably in Qt; other custom formats are used as-is.
 - **Show print dialog** – when off, **Print** sends the document directly to
   the chosen/default printer. Turn it on to choose a printer or page range
   each time.
-- **Font size**, **paper size**, **copy label**, default meter rent.
+- **Font size**, **paper size**, **copy label**. Meter rent is not a global
+  setting: each consumer type has its own meter rent (default 0), and it can be
+  changed for a single bill on the **Generate bill** page.
 
 PDF export uses the same layout and does not need a printer. A PDF is written
 to the path chosen in the save dialog.
@@ -436,7 +454,6 @@ connect_timeout = 5
 
 [app]
 company_id = 1001
-meter_rent_default = 30.00
 paper = A4                ; A4, A5, Letter, Receipt 80mm
 font_pt = 8.0             ; 6 - 12
 printer =                 ; empty = system default

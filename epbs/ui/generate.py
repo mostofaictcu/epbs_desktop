@@ -3,7 +3,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
-    QLabel, QPushButton, QSpinBox, QVBoxLayout, QWidget,
+    QLabel, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from .. import services
@@ -54,12 +54,23 @@ class BillGenerateTab(QWidget):
         self.ctx = ctx
         self.consumer: dict | None = None
         self.previous_unit = 0
+        self.has_slabs = False
+        self.has_override = False
         self._build()
         self.ctx.data_changed.connect(self.reload_consumer)
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
-        root = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QScrollArea.Shape.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        host = QWidget()
+        scroll.setWidget(host)
+        outer.addWidget(scroll)
+        root = QVBoxLayout(host)
         root.setContentsMargins(12, 10, 12, 10)
         root.setSpacing(8)
 
@@ -101,7 +112,9 @@ class BillGenerateTab(QWidget):
         self.meter_rent = QDoubleSpinBox()
         self.meter_rent.setRange(0, 100_000)
         self.meter_rent.setDecimals(2)
-        self.meter_rent.setValue(self.ctx.cfg.meter_rent_default)
+        self.meter_rent.setValue(0)
+        self.meter_rent.setToolTip("Meter rent is added once to this bill. It defaults to the "
+                                   "consumer type's meter rent, or 0 when the type has none.")
         self.meter_rent.valueChanged.connect(self._update_summary)
         self.rate = QDoubleSpinBox()
         self.rate.setRange(0, 100_000)
@@ -115,6 +128,13 @@ class BillGenerateTab(QWidget):
         self.save_rate.setChecked(True)
         self.save_rate.setToolTip("Store the rate above as this consumer's own rate. "
                                   "Clear it to use the rate only for this bill.")
+        self.flat_rate = QCheckBox("Bill at a flat rate (ignore the slab tariff)")
+        self.flat_rate.setToolTip("Tick to bill this bill at one rate per unit instead of "
+                                  "the consumer type's slab tariff.")
+        self.flat_rate.toggled.connect(self._rate_mode_changed)
+        self.tariff_note = QLabel("")
+        self.tariff_note.setObjectName("muted")
+        self.tariff_note.setWordWrap(True)
         self.kind = QComboBox()
         self.kind.addItem("Generate (normal bill)", "Generate")
         self.kind.addItem("Punishment bill", "Punishment")
@@ -124,10 +144,18 @@ class BillGenerateTab(QWidget):
         form.addRow("Bill month", self.month)
         form.addRow("Issue date", self.issue_date)
         form.addRow("Last date", self.last_date)
-        form.addRow("Rate", self.rate)
+        self.rate_caption = QLabel("Rate")
+        form.addRow(self.rate_caption, self.rate)
+        form.addRow("", self.flat_rate)
         form.addRow("", self.save_rate)
+        form.addRow("", self.tariff_note)
         form.addRow("Meter rent", self.meter_rent)
         form.addRow("Bill type", self.kind)
+        form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
+        for field in (self.present_unit, self.present_date, self.month, self.issue_date,
+                      self.last_date, self.rate, self.meter_rent, self.kind):
+            field.setMinimumWidth(220)
+            field.setMinimumHeight(28)
         left.addWidget(form_group)
 
         buttons = QHBoxLayout()
@@ -160,6 +188,14 @@ class BillGenerateTab(QWidget):
         self.units_caption.setObjectName("muted")
         sl.addWidget(self.units_caption)
         sl.addWidget(self.units_label)
+        self.slab_caption = QLabel("Slab breakdown")
+        self.slab_caption.setObjectName("muted")
+        self.slab_table = Table()
+        self.slab_table.setMinimumHeight(110)
+        self.slab_table.setVisible(False)
+        self.slab_caption.setVisible(False)
+        sl.addWidget(self.slab_caption)
+        sl.addWidget(self.slab_table)
         grid = QFormLayout()
         self.prev_label = QLabel("-")
         self.rate_label = QLabel("0.00")
@@ -168,8 +204,9 @@ class BillGenerateTab(QWidget):
         self.rent_label = QLabel("0.00")
         self.total_label = QLabel("0.00")
         self.total_label.setObjectName("total")
+        self.summary_rate_caption = QLabel("Rate")
         grid.addRow("Previous unit", self.prev_label)
-        grid.addRow("Rate", self.rate_label)
+        grid.addRow(self.summary_rate_caption, self.rate_label)
         grid.addRow("This bill", self.amount_label)
         grid.addRow("Previous due", self.due_label)
         grid.addRow("Meter rent", self.rent_label)
@@ -215,7 +252,28 @@ class BillGenerateTab(QWidget):
         self.rate.blockSignals(True)
         self.rate.setValue(float(consumer.get("rate") or 0))
         self.rate.blockSignals(False)
-        self._update_summary()
+        rent_default = consumer.get("type_meter_rent")
+        self.meter_rent.blockSignals(True)
+        self.meter_rent.setValue(float(rent_default or 0))
+        self.meter_rent.blockSignals(False)
+
+        self.has_slabs = bool(consumer.get("slab_count"))
+        self.has_override = consumer.get("rate_override") is not None
+        self.flat_rate.blockSignals(True)
+        self.flat_rate.setChecked(not self.has_slabs or self.has_override)
+        self.flat_rate.blockSignals(False)
+        self.flat_rate.setVisible(self.has_slabs)
+        self.flat_rate.setEnabled(self.has_slabs and not self.has_override)
+        self.tariff_note.setText(
+            f"Custom flat rate {money(consumer.get('rate'))}: the type slab tariff is bypassed."
+            if self.has_override else
+            (f"{consumer.get('slab_count')} slab(s) configured for "
+             f"{consumer.get('type_name') or 'this type'}. The rate shown is the average "
+             "for the units used; the bill is calculated slab by slab."
+             if self.has_slabs else
+             "Flat-rate billing: units × rate.")
+        )
+        self._rate_mode_changed()
         self._load_recent(con_id)
 
     def _load_recent(self, con_id: int) -> None:
@@ -230,7 +288,28 @@ class BillGenerateTab(QWidget):
             money_cols={3}, right_cols={2},
         )
 
+    def _slab_mode(self) -> bool:
+        return bool(self.consumer and self.has_slabs and not self.has_override
+                    and not self.flat_rate.isChecked())
+
+    def _rate_mode_changed(self) -> None:
+        slab_mode = self._slab_mode()
+        if not slab_mode and self.consumer:
+            # Back to flat billing: start from the consumer's own flat rate
+            # rather than the average that was displayed for the slab tariff.
+            self.rate.blockSignals(True)
+            self.rate.setValue(float(self.consumer.get("rate") or 0))
+            self.rate.blockSignals(False)
+        self.rate.setEnabled(not slab_mode)
+        self.save_rate.setEnabled(not slab_mode)
+        caption = "Average rate" if slab_mode else "Rate"
+        self.rate_caption.setText(caption)
+        self.summary_rate_caption.setText(caption)
+        self._update_summary()
+
     def _update_summary(self) -> None:
+        self.slab_table.setVisible(False)
+        self.slab_caption.setVisible(False)
         if not self.consumer:
             self.units_label.setText("0")
             for label in (self.prev_label, self.rate_label, self.amount_label, self.due_label,
@@ -241,25 +320,48 @@ class BillGenerateTab(QWidget):
             return
         present = self.present_unit.value()
         units = present - self.previous_unit
-        rate = float(self.rate.value())
-        rent = float(self.meter_rent.value())
-        due = float(self.consumer.get("due") or 0)
-        amount = round(units * rate, 2)
-        total = round(amount + due + rent, 2)
-        self.units_label.setText(f"{units:,}")
-        self.prev_label.setText(f"{self.previous_unit:,}")
-        self.rate_label.setText(money(rate))
-        self.amount_label.setText(money(amount))
-        self.due_label.setText(money(due))
-        self.rent_label.setText(money(rent))
-        self.total_label.setText(money(total))
         if units < 0:
+            self.units_label.setText(f"{units:,}")
+            self.prev_label.setText(f"{self.previous_unit:,}")
             self.warning.setText(f"Present unit is below the previous reading ({self.previous_unit:,}). "
                                  "Correct the reading in Unit / Rate change first.")
             self._set_enabled(False)
-        else:
-            self.warning.setText("")
-            self._set_enabled(True)
+            return
+        slab_mode = self._slab_mode()
+        try:
+            preview = services.preview_bill(
+                self.ctx.db, int(self.consumer["con_id"]), present,
+                self.meter_rent.value(),
+                None if slab_mode else float(self.rate.value()),
+            )
+        except Exception as exc:
+            self.warning.setText(str(exc))
+            self._set_enabled(False)
+            return
+        if slab_mode:
+            self.rate.blockSignals(True)
+            self.rate.setValue(float(preview.get("rate") or 0))
+            self.rate.blockSignals(False)
+        self.units_label.setText(f"{int(preview.get('units') or 0):,}")
+        self.prev_label.setText(f"{self.previous_unit:,}")
+        self.rate_label.setText(money(preview.get("rate")))
+        self.amount_label.setText(money(preview.get("bill_amount")))
+        self.due_label.setText(money(preview.get("due")))
+        self.rent_label.setText(money(preview.get("meter_rent")))
+        self.total_label.setText(money(preview.get("total")))
+        slabs = preview.get("slabs") or []
+        if slabs:
+            self.slab_table.load(
+                ["Slab", "Range", "Units", "Rate", "Amount"],
+                [[s.get("slab_no"),
+                  f"{s.get('from_unit')}-{s.get('to_unit') or 'No limit'}",
+                  s.get("units"), s.get("rate"), s.get("amount")] for s in slabs],
+                money_cols={3, 4}, right_cols={2},
+            )
+        self.slab_table.setVisible(bool(slabs))
+        self.slab_caption.setVisible(bool(slabs))
+        self.warning.setText("")
+        self._set_enabled(True)
 
     def _set_enabled(self, enabled: bool) -> None:
         for button in (self.generate_btn, self.print_btn, self.pdf_btn):
@@ -270,22 +372,34 @@ class BillGenerateTab(QWidget):
             warn(self, "Select a consumer first.")
             return
         present = self.present_unit.value()
-        rate = float(self.rate.value())
-        save_rate = self.save_rate.isChecked()
+        slab_mode = self._slab_mode()
+        rate = None if slab_mode else float(self.rate.value())
+        save_rate = self.save_rate.isChecked() and not slab_mode
         try:
             preview = services.preview_bill(self.ctx.db, int(self.consumer["con_id"]), present,
                                             self.meter_rent.value(), rate)
             rate_note = ""
             if save_rate and preview.get("rate") != preview.get("consumer", {}).get("rate"):
                 rate_note = "\nNew customer rate will be saved."
+            slabs = preview.get("slabs") or []
+            if slabs:
+                charge_line = (f"Units: {preview.get('units'):,} · slab amount: "
+                               f"{money(preview.get('bill_amount'))} "
+                               f"(average {money(preview.get('rate'))}/unit)\n")
+                charge_line += "\n".join(
+                    f"  {s.get('units'):,} units @ {money(s.get('rate'))} = "
+                    f"{money(s.get('amount'))}" for s in slabs)
+            else:
+                charge_line = (f"Units: {preview.get('units'):,} × "
+                               f"{money(preview.get('rate'))} = "
+                               f"{money(preview.get('bill_amount'))}")
             if not confirm_save(
                 self,
                 f"Generate bill for {self.consumer.get('con_id')} - "
                 f"{self.consumer.get('con_name') or ''}?\n\n"
                 f"Month: {self.month.currentText()}\n"
                 f"Previous unit: {self.previous_unit:,} · Present unit: {present:,}\n"
-                f"Units: {preview.get('units'):,} × {money(preview.get('rate'))} = "
-                f"{money(preview.get('bill_amount'))}\n"
+                f"{charge_line}\n"
                 f"Due: {money(preview.get('due'))} · Meter rent: "
                 f"{money(preview.get('meter_rent'))}\n"
                 f"Total: {money(preview.get('total'))}{rate_note}\n\n"

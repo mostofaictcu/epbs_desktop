@@ -35,6 +35,11 @@ def esc(value) -> str:
     return _html.escape(str(value if value is not None else ""))
 
 
+def _slab_range(slab: dict) -> str:
+    end = slab.get("to_unit")
+    return f"{slab.get('from_unit')}-{end if end else 'No limit'}"
+
+
 def _logo_url(path: str | None) -> str:
     """Document logo: the configured file, else ``static/images/company_logo.jpg``."""
     p = resolve_logo(path, print_ready=True)
@@ -96,6 +101,7 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
     c = data.get("consumer") or {}
     readings = data.get("readings") or []
     details = data.get("details") or []
+    slabs = data.get("slabs") or []
     readings = readings[:1] or [{}]
     r = readings[0]
     prev_unit = r.get("previous_unit")
@@ -109,6 +115,22 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
     detail_line = "; ".join(
         f"{d.get('bill_month') or ''} ({d.get('bill_details') or ''})" for d in details if d.get("bill_month")
     )
+    slab_rows = "".join(
+        f"<tr><td>{esc(s.get('slab_no'))}</td>"
+        f"<td class='right'>{esc(_slab_range(s))}</td>"
+        f"<td class='right'>{esc(s.get('units'))}</td>"
+        f"<td class='right'>{esc(money(s.get('rate')))}</td>"
+        f"<td class='right'>{esc(money(s.get('amount')))}</td></tr>"
+        for s in slabs
+    )
+    slab_table = ""
+    if slabs:
+        slab_table = f"""
+    <h4>Slab calculation</h4>
+    <table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+      <tr><th>Slab</th><th>Range (units)</th><th>Units</th><th>Rate</th><th>Amount</th></tr>
+      {slab_rows}
+    </table>"""
 
     return f"""<html><head><meta charset="utf-8"><style>{_css(font_pt)}</style></head><body>
     {_company_header(company, 'ELECTRICITY BILL', f'Bill No: {bill.get("bill_no")}', font_pt)}
@@ -127,15 +149,16 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
     <h4>Meter reading</h4>
     <table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
       <tr><th>Previous date</th><th>Previous unit</th><th>Present date</th><th>Present unit</th>
-          <th>Units used</th><th>Rate</th></tr>
+          <th>Units used</th><th>{'Average rate' if slabs else 'Rate'}</th></tr>
       <tr><td>{esc(fmt_date(r.get('previous_date')))}</td><td class="right">{esc(prev_unit if prev_unit is not None else '')}</td>
           <td>{esc(fmt_date(r.get('present_date')))}</td><td class="right">{esc(pres_unit if pres_unit is not None else '')}</td>
           <td class="right"><b>{units}</b></td><td class="right">{esc(money(rate))}</td></tr>
     </table>
+    {slab_table}
     <h4>Charges</h4>
     <table class="tot" width="100%" cellspacing="0" cellpadding="1">
       <tr><td width="55%"></td><td class="k" width="25%">Meter rent</td><td class="right" width="20%">{esc(money(bill.get('meter_rent')))}</td></tr>
-      <tr><td></td><td class="k">Units used × rate ({units} × {esc(money(rate))})</td><td class="right">{esc(money(bill.get('bill_amount')))}</td></tr>
+      <tr><td></td><td class="k">{'Slab amount (' + str(units) + ' units)' if slabs else 'Units used × rate (' + str(units) + ' × ' + esc(money(rate)) + ')'}</td><td class="right">{esc(money(bill.get('bill_amount')))}</td></tr>
       <tr><td></td><td class="k">Previous due</td><td class="right">{esc(money(bill.get('due')))}</td></tr>
       <tr><td></td><td class="k"><b>TOTAL PAYABLE</b></td>
           <td class="right"><b>{esc(money(bill.get('total_amount')))}</b></td></tr>

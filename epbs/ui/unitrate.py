@@ -165,10 +165,18 @@ class UnitRateTab(QWidget):
         )
         self.new_rate.setValue(float(override if override is not None else consumer.get("rate") or 0))
         self.scope_type.setText(f"All consumers of type {consumer.get('type_name') or '-'}")
-        self.rate_summary.setText(
-            f"Changing the type rate affects every '{consumer.get('type_name') or '-'}' consumer. "
-            "Use the per-consumer override to change only this account."
-        )
+        if consumer.get("slab_count"):
+            self.rate_summary.setText(
+                f"'{consumer.get('type_name') or '-'}' uses a slab tariff. Changing the flat "
+                "type rate only affects bills that bypass slabs (or consumers with a custom "
+                "rate). Edit the slabs in Master data → Types → Slabs. A per-consumer rate "
+                "bypasses the slab tariff for that account."
+            )
+        else:
+            self.rate_summary.setText(
+                f"Changing the type rate affects every '{consumer.get('type_name') or '-'}' consumer. "
+                "Use the per-consumer override to change only this account."
+            )
         self.reading_table.load(
             ["Bill", "Prev date", "Prev unit", "Present date", "Present unit", "Units", "Rate"],
             [[r.get("bill_no"), r.get("previous_date"), r.get("previous_unit"),
@@ -233,9 +241,15 @@ class UnitRateTab(QWidget):
             return
         message = "Reading corrected."
         if result:
-            message += (f"\nLinked bill recalculated: {result['units']} units x "
-                        f"{money(result['rate'])} = {money(result['bill_amount'])}; "
-                        f"total now {money(result['total'])}.")
+            if result.get("slabs"):
+                message += (f"\nLinked bill recalculated slab by slab: "
+                            f"{result['units']} units = {money(result['bill_amount'])} "
+                            f"(average {money(result['rate'])}/unit); "
+                            f"total now {money(result['total'])}.")
+            else:
+                message += (f"\nLinked bill recalculated: {result['units']} units x "
+                            f"{money(result['rate'])} = {money(result['bill_amount'])}; "
+                            f"total now {money(result['total'])}.")
         info(self, message)
         self.reason.clear()
         self.ctx.notify_change()
