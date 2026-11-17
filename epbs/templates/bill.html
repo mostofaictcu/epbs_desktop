@@ -15,7 +15,7 @@
 <h4>Meter reading</h4>
 <table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
   <tr><th>Previous date</th><th>Previous unit</th><th>Present date</th><th>Present unit</th>
-      <th>Units used</th><th>{% if slabs %}Average rate{% else %}Rate{% endif %}</th></tr>
+      <th>Units used</th><th>{% if fixed_charge %}Fixed charge{% elif slabs %}Average rate{% else %}Rate{% endif %}</th></tr>
   <tr><td>{{ reading.previous_date|date }}</td><td class="right">{{ previous_unit }}</td>
       <td>{{ reading.present_date|date }}</td><td class="right">{{ present_unit }}</td>
       <td class="right"><b>{{ units }}</b></td><td class="right">{{ rate|money }}</td></tr>
@@ -36,7 +36,7 @@
 <h4>Charges</h4>
 <table class="tot" width="100%" cellspacing="0" cellpadding="1">
   <tr><td width="55%"></td><td class="k" width="25%">Meter rent</td><td class="right" width="20%">{{ bill.meter_rent|money }}</td></tr>
-  <tr><td></td><td class="k">{% if minimum_applied %}Minimum charge{% elif slabs %}Slab amount ({{ units }} units){% else %}Units used × rate ({{ units }} × {{ rate|money }}){% endif %}</td><td class="right">{{ bill.bill_amount|money }}</td></tr>
+  <tr><td></td><td class="k">{% if minimum_applied %}Minimum charge{% elif fixed_charge %}Fixed charge (per bill){% elif slabs %}Slab amount ({{ units }} units){% else %}Units used × rate ({{ units }} × {{ rate|money }}){% endif %}</td><td class="right">{{ bill.bill_amount|money }}</td></tr>
   <tr><td></td><td class="k">Previous due</td><td class="right">{{ bill.due|money }}</td></tr>
   <tr><td></td><td class="k"><b>TOTAL PAYABLE</b></td>
       <td class="right"><b>{{ bill.total_amount|money }}</b></td></tr>

@@ -9,8 +9,9 @@ Features:
 - Windows-style **Home screen** with large icon tiles for each section, plus
   quick actions (Excel backup, change password, about) and a status strip.
 - **Master data** screen for consumer types/rates, optional progressive slab
-  tariffs, per-type meter rent, areas, departments, designations and consumer
-  groups (add, rename, delete with usage checks).
+  tariffs, per-type meter rent and minimum amounts, fixed-charge types (BDF),
+  areas, departments, designations and consumer groups (add, rename, delete
+  with usage checks).
 - Consumer database: search by account number, meter number or name; add,
   edit, delete, Excel import.
 - Bill generation with an on-screen summary of **units used and total price**.
@@ -156,9 +157,9 @@ login dialog and Home banner plays the animation built into `logo.svg` once
 **Master data** tab edits the lists used by the consumer form. The **Settings**
 tab has an **Edit master data...** shortcut to the same screen:
 
-- **Types** – name, flat rate, default meter rent, minimum amount and optional
-  slabs (for example `RES-QUATER`). A type with no slabs is billed at the flat
-  rate.
+- **Types** – name, flat rate, default meter rent, minimum amount, optional
+  fixed charge and optional slabs (for example `RES-QUATER`). A type with no
+  slabs is billed at the flat rate.
 - **Areas**, **Departments**, **Designations** – plain name lists.
 - **Groups** – consumer groups, with a count of how many consumers use each one.
 
@@ -176,6 +177,14 @@ minimum instead — for example a calculated `200.00` with a `750.00` minimum is
 billed at `750.00`. Meter rent and previous dues are added after the minimum.
 The applied minimum is stored on the bill (`tbl_bills.minimum_charge`) and
 shown as **Minimum charge** on the printed bill.
+
+Some types are charged a flat amount per bill instead of a price per unit
+(for example `BDF`). Tick **Fixed charge (rate is billed once per bill)** in
+the type dialog. The bill then charges the rate once, no matter how many units
+were used — even `0` units still produce the full charge. Slab rates are not
+used for a fixed-charge type. The bill records this (`tbl_bills.fixed_charge`)
+and prints the line as **Fixed charge (per bill)**. Untick the box to bill the
+type per unit again.
 
 Use **Add**, **Edit** (or double-click) and **Delete**. Names are matched
 case-insensitively, so adding an existing name selects the existing row instead
@@ -231,7 +240,9 @@ values are created automatically. Existing accounts are updated.
    used and the summary lists each slab. Tick **Bill at a flat rate** to ignore
    the slab tariff for this bill. **Save this rate for this customer** (ticked
    by default) also stores a flat rate as the consumer's own rate; clear the
-   box to use the rate only for this bill.
+   box to use the rate only for this bill. For a fixed-charge type (for
+   example `BDF`) the field is labelled **Fixed charge** and the amount is
+   billed once per bill, not multiplied by the reading.
 5. The summary shows previous/present units, **units used**, the slab breakdown
    (or flat rate), bill amount, minimum amount, previous due, meter rent and
    **total payable**. When the calculated charge is below the type's minimum,
@@ -259,7 +270,9 @@ other rate change.
      future rates.
 4. Optionally **recalculate the linked bill** and/or **re-price unpaid bills**
    of the consumer (useful after a correction).
-5. The summary shows units, rate, amount and total before saving.
+5. The summary shows units, rate, amount and total before saving. For a
+   fixed-charge type the amount is the fixed charge and is not multiplied by
+   the units.
 6. Every change is written to `tbl_audit` and visible in the audit list.
 
 ### Bills & payments

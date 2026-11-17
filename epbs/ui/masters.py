@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtWidgets import (
-    QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
+    QCheckBox, QDialog, QDialogButtonBox, QDoubleSpinBox, QFormLayout, QHBoxLayout,
     QHeaderView, QLabel, QLineEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget,
 )
 
@@ -13,7 +13,8 @@ from .common import Table, confirm_delete, confirm_save, error, money, warn
 class MasterDialog(QDialog):
     def __init__(self, title: str, name: str = "", rate: float | None = None,
                  with_rate: bool = False, meter_rent: float | None = None,
-                 minimum_amount: float | None = None, parent=None):
+                 minimum_amount: float | None = None, fixed_charge: bool = False,
+                 parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(360)
@@ -27,6 +28,15 @@ class MasterDialog(QDialog):
         self.rate.setRange(0, 100000)
         self.rate.setDecimals(2)
         self.rate.setValue(float(rate or 0))
+        self.rate.setSuffix(" / unit")
+        self.rate_caption = QLabel("Flat rate")
+        self.fixed_charge = QCheckBox("Fixed charge (rate is billed once per bill)")
+        self.fixed_charge.setToolTip(
+            "Tick this for types such as BDF where the rate is a flat amount per bill, "
+            "not a price per unit. The bill charges the rate once, even when the consumer "
+            "uses 0 units. Slab tariffs are ignored.")
+        self.fixed_charge.setChecked(bool(fixed_charge))
+        self.fixed_charge.toggled.connect(self._fixed_charge_changed)
         self.meter_rent = QDoubleSpinBox()
         self.meter_rent.setRange(0, 100000)
         self.meter_rent.setDecimals(2)
@@ -41,21 +51,29 @@ class MasterDialog(QDialog):
                                        "amount is lower, this amount is billed instead. 0 = no "
                                        "minimum. Meter rent and previous dues are added after it.")
         if with_rate:
-            form.addRow("Flat rate", self.rate)
+            form.addRow(self.rate_caption, self.rate)
+            form.addRow("", self.fixed_charge)
             form.addRow("Default meter rent", self.meter_rent)
             form.addRow("Minimum amount", self.minimum_amount)
-            note = QLabel("Slabs are optional. A type with no slabs is billed at the flat rate. "
-                          "Meter rent is added once to every bill and defaults to 0. A minimum "
-                          "amount raises a lower calculated charge to the minimum; 0 disables it.")
+        root.addLayout(form)
+        if with_rate:
+            note = QLabel("Slabs are optional; a type with no slabs bills at the flat rate. "
+                          "Tick fixed charge when the rate is an amount per bill, not per unit "
+                          "(for example BDF). Meter rent is added once per bill; the minimum "
+                          "raises a lower charge. 0 disables either.")
             note.setObjectName("muted")
             note.setWordWrap(True)
-            form.addRow("", note)
-        root.addLayout(form)
+            root.addWidget(note)
         box = QDialogButtonBox(QDialogButtonBox.StandardButton.Save |
                                QDialogButtonBox.StandardButton.Cancel)
         box.accepted.connect(self._accept)
         box.rejected.connect(self.reject)
         root.addWidget(box)
+        self._fixed_charge_changed(self.fixed_charge.isChecked())
+
+    def _fixed_charge_changed(self, checked: bool) -> None:
+        self.rate_caption.setText("Fixed charge" if checked else "Flat rate")
+        self.rate.setSuffix(" / bill" if checked else " / unit")
 
     def _accept(self) -> None:
         if not self.name.text().strip():
@@ -63,11 +81,12 @@ class MasterDialog(QDialog):
             return
         self.accept()
 
-    def values(self) -> tuple[str, float | None, float | None, float | None]:
+    def values(self) -> tuple[str, float | None, float | None, float | None, bool | None]:
         return (self.name.text().strip(),
                 (self.rate.value() if self.with_rate else None),
                 (self.meter_rent.value() if self.with_rate else None),
-                (self.minimum_amount.value() if self.with_rate else None))
+                (self.minimum_amount.value() if self.with_rate else None),
+                (self.fixed_charge.isChecked() if self.with_rate else None))
 
 
 class SlabDialog(QDialog):
@@ -285,7 +304,8 @@ class MasterPane(QWidget):
 
         hint = QLabel("Changes are saved immediately. An item used by a consumer "
                       "cannot be deleted. Types can use a flat rate or a slab tariff, "
-                      "plus an optional minimum amount per bill.")
+                      "a fixed charge per bill (BDF-style), and an optional minimum "
+                      "amount per bill.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -301,9 +321,9 @@ class MasterPane(QWidget):
             return
         headers = ["ID", self._name_header]
         if self.with_rate:
-            headers += ["Flat rate", "Meter rent", "Minimum", "Slabs"]
-            money_cols = {2, 3, 4}
-            right_cols = {5}
+            headers += ["Rate", "Billing", "Meter rent", "Minimum", "Slabs"]
+            money_cols = {2, 4, 5}
+            right_cols = {6}
         else:
             headers.append("Used by")
             money_cols = set()
@@ -312,8 +332,10 @@ class MasterPane(QWidget):
         for row in self._rows:
             values = [row["id"], row["name"]]
             if self.with_rate:
-                values += [row.get("rate"), row.get("meter_rent") or 0,
-                           row.get("minimum_amount") or 0, row.get("slabs") or 0]
+                values += [row.get("rate"),
+                           "Fixed / bill" if row.get("fixed_charge") else "Per unit",
+                           row.get("meter_rent") or 0, row.get("minimum_amount") or 0,
+                           row.get("slabs") or 0]
             else:
                 values.append(row.get("used"))
             data.append(values)
@@ -333,16 +355,18 @@ class MasterPane(QWidget):
                               parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate, meter_rent, minimum_amount = dialog.values()
+        name, rate, meter_rent, minimum_amount, fixed_charge = dialog.values()
         detail = f"Add {self._name_header.lower()} '{name}'"
         if self.with_rate:
-            detail += (f" with flat rate {rate:.2f}, meter rent {meter_rent:.2f} "
+            detail += (f" with rate {rate:.2f}, meter rent {meter_rent:.2f} "
                        f"and minimum amount {minimum_amount:.2f}")
+            if fixed_charge:
+                detail += "\n\nThe rate is billed once per bill as a fixed charge, not per unit."
         if not confirm_save(self, detail + "?"):
             return
         try:
             services.add_master_row(self.ctx.db, self.kind, name, rate, meter_rent,
-                                    minimum_amount)
+                                    minimum_amount, bool(fixed_charge))
         except Exception as exc:
             error(self, str(exc))
             return
@@ -357,13 +381,17 @@ class MasterPane(QWidget):
         dialog = MasterDialog(f"Edit {self._name_header.lower()}", str(row["name"]),
                               float(row.get("rate") or 0), self.with_rate,
                               float(row.get("meter_rent") or 0),
-                              float(row.get("minimum_amount") or 0), self)
+                              float(row.get("minimum_amount") or 0),
+                              bool(row.get("fixed_charge")), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate, meter_rent, minimum_amount = dialog.values()
+        name, rate, meter_rent, minimum_amount, fixed_charge = dialog.values()
         detail = f"Change {self._name_header.lower()} '{row['name']}' to '{name}'"
         if self.with_rate and float(row.get("rate") or 0) != float(rate or 0):
-            detail += f"\n\nFlat rate: {money(row.get('rate'))} → {money(rate)}"
+            detail += f"\n\nRate: {money(row.get('rate'))} → {money(rate)}"
+        if self.with_rate and bool(row.get("fixed_charge")) != bool(fixed_charge):
+            detail += ("\nBilling: " + ("fixed amount per bill" if fixed_charge
+                                        else "per unit"))
         if self.with_rate and float(row.get("meter_rent") or 0) != float(meter_rent or 0):
             detail += f"\nMeter rent: {money(row.get('meter_rent'))} → {money(meter_rent)}"
         if (self.with_rate
@@ -376,7 +404,7 @@ class MasterPane(QWidget):
             return
         try:
             services.update_master_row(self.ctx.db, self.kind, int(row["id"]), name, rate,
-                                       meter_rent, minimum_amount)
+                                       meter_rent, minimum_amount, bool(fixed_charge))
         except Exception as exc:
             error(self, str(exc))
             return
@@ -387,6 +415,10 @@ class MasterPane(QWidget):
         row = self._selected()
         if not row:
             warn(self, "Select a consumer type first.")
+            return
+        if row.get("fixed_charge"):
+            warn(self, "This type is billed as a fixed amount per bill, so slab rates are not "
+                       "used. Clear the fixed charge flag first.")
             return
         if SlabDialog(self.ctx, row, self).exec() == QDialog.DialogCode.Accepted:
             self.refresh()

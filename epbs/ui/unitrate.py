@@ -87,7 +87,8 @@ class UnitRateTab(QWidget):
         rl = QVBoxLayout(rate_group)
         self.rate_current = QLabel("-")
         self.rate_current.setObjectName("h2")
-        rl.addWidget(QLabel("Current rate"))
+        self.rate_caption = QLabel("Current rate")
+        rl.addWidget(self.rate_caption)
         rl.addWidget(self.rate_current)
         self.rate_note = QLabel("")
         self.rate_note.setObjectName("muted")
@@ -157,15 +158,24 @@ class UnitRateTab(QWidget):
             f"status {consumer.get('con_status')} · outstanding {money(consumer.get('due'))}"
         )
         self.rate_current.setText(money(consumer.get("rate")))
+        fixed = bool(consumer.get("type_fixed_charge"))
+        self.rate_caption.setText("Current fixed charge" if fixed else "Current rate")
         override = consumer.get("rate_override")
         self.rate_note.setText(
+            "Fixed charge type: the amount is billed once per bill, not multiplied by units."
+            if fixed else
             "Custom rate is active for this consumer."
             if override is not None else
             f"Using the type rate of {consumer.get('type_name') or 'no type'}."
         )
         self.new_rate.setValue(float(override if override is not None else consumer.get("rate") or 0))
         self.scope_type.setText(f"All consumers of type {consumer.get('type_name') or '-'}")
-        if consumer.get("slab_count"):
+        if fixed:
+            self.rate_summary.setText(
+                f"'{consumer.get('type_name') or '-'}' is billed a fixed amount per bill. "
+                "Changing the type rate changes the fixed amount for every consumer of this "
+                "type; the per-consumer override changes only this account.")
+        elif consumer.get("slab_count"):
             self.rate_summary.setText(
                 f"'{consumer.get('type_name') or '-'}' uses a slab tariff. Changing the flat "
                 "type rate only affects bills that bypass slabs (or consumers with a custom "
@@ -245,6 +255,10 @@ class UnitRateTab(QWidget):
                 message += (f"\nLinked bill recalculated slab by slab: "
                             f"{result['units']} units = {money(result['bill_amount'])} "
                             f"(average {money(result['rate'])}/unit); "
+                            f"total now {money(result['total'])}.")
+            elif result.get("is_fixed"):
+                message += (f"\nLinked bill recalculated as a fixed charge: "
+                            f"{money(result['bill_amount'])} per bill; "
                             f"total now {money(result['total'])}.")
             else:
                 message += (f"\nLinked bill recalculated: {result['units']} units x "

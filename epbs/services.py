@@ -324,7 +324,7 @@ SELECT c.con_id, c.con_name, c.con_address, c.meter_no, c.con_contact, c.con_sta
        c.area_id, a.area_details,
        c.type_id, t.type_name, COALESCE(c.rate_override, t.rate, 0)::numeric(12,2) AS rate,
        t.rate AS type_rate, t.meter_rent AS type_meter_rent,
-       t.minimum_amount AS type_minimum_amount,
+       t.minimum_amount AS type_minimum_amount, t.fixed_charge AS type_fixed_charge,
        (SELECT count(*) FROM tbl_type_slab ts WHERE ts.type_id = c.type_id) AS slab_count,
        c.dep_id, d.dep_details,
        c.des_id, ds.des_details,
@@ -503,18 +503,25 @@ def unpaid_due(db: Database, con_id: int, exclude_bill_no: int | None = None) ->
 
 
 def _billing_amount(db: Database, *, type_id, rate_override, fallback_rate,
-                    units: int, rate=None, minimum=None) -> dict:
+                    units: int, rate=None, minimum=None, fixed_charge: bool = False) -> dict:
     """Price ``units`` with an explicit flat rate, slabs, or the flat type rate.
 
     An explicit ``rate`` (entered for one bill or a consumer override) always
-    wins and bypasses the type's slab tariff.  ``minimum`` is the type's
-    minimum charge: when the calculated charge is lower, the minimum is billed
-    instead and ``minimum_charge`` records that it was applied.
+    wins and bypasses the type's slab tariff.  A ``fixed_charge`` type bills
+    its rate once per bill instead of multiplying it by the units (for example
+    a BDF type).  ``minimum`` is the type's minimum charge: when the calculated
+    charge is lower, the minimum is billed instead and ``minimum_charge``
+    records that it was applied.
     """
-    if rate is not None:
+    if fixed_charge:
+        applied = q2(rate if rate is not None
+                     else (rate_override if rate_override is not None else fallback_rate))
+        result = {"amount": applied, "rate": applied, "slabs": [], "tariff_slabs": [],
+                  "is_slab": False, "is_fixed": True}
+    elif rate is not None:
         applied = q2(rate)
         result = {"amount": q2(Decimal(units) * applied), "rate": applied,
-                  "slabs": [], "tariff_slabs": [], "is_slab": False}
+                  "slabs": [], "tariff_slabs": [], "is_slab": False, "is_fixed": False}
     elif rate_override is None:
         slabs = type_slabs(db, type_id)
         if slabs:
@@ -522,15 +529,15 @@ def _billing_amount(db: Database, *, type_id, rate_override, fallback_rate,
             amount = slab_amount(rows)
             average = q2(Decimal(amount) / Decimal(units)) if units else Decimal("0.00")
             result = {"amount": amount, "rate": average, "slabs": rows,
-                      "tariff_slabs": slabs, "is_slab": True}
+                      "tariff_slabs": slabs, "is_slab": True, "is_fixed": False}
         else:
             applied = q2(fallback_rate)
             result = {"amount": q2(Decimal(units) * applied), "rate": applied,
-                      "slabs": [], "tariff_slabs": [], "is_slab": False}
+                      "slabs": [], "tariff_slabs": [], "is_slab": False, "is_fixed": False}
     else:
         applied = q2(rate_override if rate_override is not None else fallback_rate)
         result = {"amount": q2(Decimal(units) * applied), "rate": applied,
-                  "slabs": [], "tariff_slabs": [], "is_slab": False}
+                  "slabs": [], "tariff_slabs": [], "is_slab": False, "is_fixed": False}
 
     floor = q2(minimum)
     calculated = q2(result["amount"])
@@ -564,6 +571,7 @@ def preview_bill(db: Database, con_id: int, present_unit: int, meter_rent=None,
         fallback_rate=consumer.get("type_rate") if consumer.get("type_rate") is not None
         else consumer.get("rate"),
         units=units, rate=rate, minimum=consumer.get("type_minimum_amount"),
+        fixed_charge=bool(consumer.get("type_fixed_charge")),
     )
     amount = tariff["amount"]
     rent = q2(meter_rent if meter_rent is not None
@@ -575,6 +583,7 @@ def preview_bill(db: Database, con_id: int, present_unit: int, meter_rent=None,
         "units": units, "rate": tariff["rate"], "bill_amount": amount, "due": due,
         "meter_rent": rent, "total": total, "previous_date": (prev or {}).get("present_date"),
         "previous_reading": prev, "slabs": tariff["slabs"], "is_slab": tariff["is_slab"],
+        "is_fixed": tariff["is_fixed"],
         "minimum": tariff["minimum"], "minimum_charge": tariff["minimum_charge"],
         "calculated_amount": tariff["calculated_amount"],
     }
@@ -660,10 +669,12 @@ def _generate_bill_once(db: Database, *, con_id: int, present_unit: int, present
             rate_override=consumer.get("rate_override"),
             fallback_rate=ctype.get("rate"), units=units, rate=rate,
             minimum=ctype.get("minimum_amount"),
+            fixed_charge=bool(ctype.get("fixed_charge")),
         )
         applied_rate = tariff["rate"]
         amount = tariff["amount"]
         minimum_charge = tariff["minimum_charge"]
+        fixed_charge = bool(tariff.get("is_fixed"))
         if applied_rate < 0:
             raise ValueError("Rate cannot be negative.")
         rent = q2(meter_rent if meter_rent is not None else ctype.get("meter_rent"))
@@ -674,21 +685,22 @@ def _generate_bill_once(db: Database, *, con_id: int, present_unit: int, present
             db.execute(
                 """INSERT INTO tbl_bills
                        (bill_no, issue_date, last_date, bill_amount, due, meter_rent,
-                        minimum_charge, total_amount, bill_status, bill_print, meter_no, con_id,
-                        user_id, remarks)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'Unpaid','No',%s,%s,%s,%s)""",
-                (bill_no, issue_date, last_date, amount, due, rent, minimum_charge, total,
-                 consumer.get("meter_no"), con_id, user_id,
+                        minimum_charge, fixed_charge, total_amount, bill_status, bill_print,
+                        meter_no, con_id, user_id, remarks)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,'Unpaid','No',%s,%s,%s,%s)""",
+                (bill_no, issue_date, last_date, amount, due, rent, minimum_charge,
+                 fixed_charge, total, consumer.get("meter_no"), con_id, user_id,
                  kind if kind != "Generate" else None),
             )
         else:
             row = db.one(
                 """INSERT INTO tbl_bills
                        (issue_date, last_date, bill_amount, due, meter_rent, minimum_charge,
-                        total_amount, bill_status, bill_print, meter_no, con_id, user_id, remarks)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,'Unpaid','No',%s,%s,%s,%s)
+                        fixed_charge, total_amount, bill_status, bill_print, meter_no, con_id,
+                        user_id, remarks)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,'Unpaid','No',%s,%s,%s,%s)
                    RETURNING bill_no""",
-                (issue_date, last_date, amount, due, rent, minimum_charge, total,
+                (issue_date, last_date, amount, due, rent, minimum_charge, fixed_charge, total,
                  consumer.get("meter_no"), con_id, user_id, kind if kind != "Generate" else None),
             )
             bill_no = int(row["bill_no"])
@@ -794,8 +806,8 @@ def mark_printed(db: Database, bill_no: int) -> None:
 
 _BILL_SELECT = """
 SELECT b.bill_no, b.issue_date, b.last_date, b.bill_amount, b.due, b.meter_rent,
-       b.minimum_charge, b.total_amount, b.bill_status, b.bill_print, b.meter_no, b.con_id,
-       b.user_id, b.print_count, b.last_printed_at, b.remarks,
+       b.minimum_charge, b.fixed_charge, b.total_amount, b.bill_status, b.bill_print, b.meter_no,
+       b.con_id, b.user_id, b.print_count, b.last_printed_at, b.remarks,
        c.con_name, c.con_address, t.type_name, COALESCE(c.rate_override, t.rate, 0)::numeric(12,2) AS rate,
        COALESCE((SELECT u.present_unit - u.previous_unit FROM tbl_unit u
                   WHERE u.bill_no=b.bill_no ORDER BY u.un_id DESC LIMIT 1), 0) AS units
@@ -978,8 +990,15 @@ def recalc_bill(db: Database, bill_no: int, user_id: str = "", note: str = "") -
         consumer = get_consumer(db, bill.get("con_id")) if bill.get("con_id") else None
         units = int(reading.get("present_unit") or 0) - int(reading.get("previous_unit") or 0)
         snapshot = bill_slabs(db, bill_no, include_empty=True)
+        fixed = bool((consumer or {}).get("type_fixed_charge"))
         lines: list[dict] = []
-        if snapshot:
+        if fixed:
+            rate = q2(reading.get("rate_applied") if reading.get("rate_applied") is not None
+                      else (consumer or {}).get("rate"))
+            amount = rate
+            # a fixed-charge type ignores slab rates; drop any old snapshot lines
+            db.execute("DELETE FROM tbl_bill_slab WHERE bill_no=%s", (bill_no,))
+        elif snapshot:
             lines = slab_breakdown(units, snapshot)
             amount = slab_amount(lines)
             rate = q2(Decimal(amount) / Decimal(units)) if units else Decimal("0.00")
@@ -1006,8 +1025,8 @@ def recalc_bill(db: Database, bill_no: int, user_id: str = "", note: str = "") -
         total = q2(amount + due + rent)
         db.execute(
             """UPDATE tbl_bills SET bill_amount=%s, due=%s, total_amount=%s,
-                      minimum_charge=%s WHERE bill_no=%s""",
-            (amount, due, total, minimum_charge, bill_no),
+                      minimum_charge=%s, fixed_charge=%s WHERE bill_no=%s""",
+            (amount, due, total, minimum_charge, fixed, bill_no),
         )
         db.execute(
             """UPDATE tbl_bills_details SET bill_amount=%s
@@ -1017,10 +1036,11 @@ def recalc_bill(db: Database, bill_no: int, user_id: str = "", note: str = "") -
         _audit(db, "tbl_bills", str(bill_no), "total_amount",
                str(bill.get("total_amount")), str(total), user_id,
                note or (f"Recalculated: minimum charge {amount}" if minimum_charge
-                        else f"Recalculated: {units} units x {rate}"))
+                        else (f"Recalculated: fixed charge {amount}" if fixed
+                              else f"Recalculated: {units} units x {rate}")))
         return {"units": units, "rate": rate, "bill_amount": amount, "due": due,
                 "meter_rent": rent, "total": total, "slabs": lines,
-                "minimum_charge": minimum_charge}
+                "minimum_charge": minimum_charge, "is_fixed": fixed}
 
 
 # --------------------------------------------------------------------------
@@ -1368,8 +1388,8 @@ EXPORT_TABLES = [
             LEFT JOIN tbl_department d ON d.dep_id=c.dep_id
             ORDER BY c.con_id"""),
     ("Bills", "tbl_bills", """SELECT bill_no, issue_date, last_date, bill_amount, due, meter_rent,
-            minimum_charge, total_amount, bill_status, bill_print, print_count, meter_no, con_id,
-            user_id, remarks FROM tbl_bills ORDER BY bill_no"""),
+            minimum_charge, fixed_charge, total_amount, bill_status, bill_print, print_count,
+            meter_no, con_id, user_id, remarks FROM tbl_bills ORDER BY bill_no"""),
     ("BillDetails", "tbl_bills_details", """SELECT bill_det_id, bill_details, bill_month, bill_status,
             bill_amount, bill_no FROM tbl_bills_details ORDER BY bill_det_id"""),
     ("UnitReadings", "tbl_unit", """SELECT un_id, previous_date, previous_unit, present_date,
@@ -1377,7 +1397,7 @@ EXPORT_TABLES = [
     ("Payments", "tbl_payment", """SELECT payment_id, bill_no, bill_amount, paid_date, con_id, user_id
             FROM tbl_payment ORDER BY payment_id"""),
     ("Types", "tbl_type",
-     "SELECT type_id, type_name, rate, meter_rent, minimum_amount "
+     "SELECT type_id, type_name, rate, fixed_charge, meter_rent, minimum_amount "
      "FROM tbl_type ORDER BY type_id"),
     ("TypeSlabs", "tbl_type_slab", """SELECT slab_id, type_id, slab_no, from_unit, to_unit,
             rate FROM tbl_type_slab ORDER BY type_id, slab_no"""),
@@ -1469,7 +1489,7 @@ def list_master_rows(db: Database, kind: str) -> list[dict]:
         used = f"(SELECT count(*) FROM tbl_consumer c WHERE c.{MASTER_FK[kind]}=m.{idc})"
     extra = ""
     if kind == "type":
-        extra = (""", m.meter_rent, m.minimum_amount,
+        extra = (""", m.meter_rent, m.minimum_amount, m.fixed_charge,
             (SELECT count(*) FROM tbl_type_slab s WHERE s.type_id=m.type_id) AS slabs""")
     return db.query(
         f"""SELECT m.{idc} AS id, m.{namec} AS name, {rate}{extra}, {used} AS used
@@ -1478,7 +1498,7 @@ def list_master_rows(db: Database, kind: str) -> list[dict]:
 
 
 def add_master_row(db: Database, kind: str, name: str, rate=None,
-                   meter_rent=None, minimum_amount=None) -> int:
+                   meter_rent=None, minimum_amount=None, fixed_charge: bool = False) -> int:
     table, idc, namec, label, has_rate = MASTER_SPECS[kind]
     name = (name or "").strip()[:45]
     if not name:
@@ -1486,16 +1506,18 @@ def add_master_row(db: Database, kind: str, name: str, rate=None,
     if db.one(f"SELECT {idc} FROM {table} WHERE lower({namec})=lower(%s)", (name,)):
         raise ValueError(f"{label} '{name}' already exists.")
     if has_rate:
-        row = db.one(f"INSERT INTO {table} ({namec}, rate, meter_rent, minimum_amount) "
-                     f"VALUES (%s,%s,%s,%s) RETURNING {idc}",
-                     (name, q2(rate), q2(meter_rent), q2(minimum_amount)))
+        row = db.one(f"INSERT INTO {table} ({namec}, rate, fixed_charge, meter_rent, "
+                     f"minimum_amount) VALUES (%s,%s,%s,%s,%s) RETURNING {idc}",
+                     (name, q2(rate), bool(fixed_charge), q2(meter_rent),
+                      q2(minimum_amount)))
     else:
         row = db.one(f"INSERT INTO {table} ({namec}) VALUES (%s) RETURNING {idc}", (name,))
     return int(row[idc])
 
 
 def update_master_row(db: Database, kind: str, row_id: int, name: str, rate=None,
-                      meter_rent=None, minimum_amount=None) -> None:
+                      meter_rent=None, minimum_amount=None,
+                      fixed_charge: bool = False) -> None:
     table, idc, namec, label, has_rate = MASTER_SPECS[kind]
     name = (name or "").strip()[:45]
     if not name:
@@ -1516,9 +1538,10 @@ def update_master_row(db: Database, kind: str, row_id: int, name: str, rate=None
                            "WHERE lower(con_group)=lower(%s)",
                            (name, old["group_name"]))
         elif has_rate:
-            db.execute(f"UPDATE {table} SET {namec}=%s, rate=%s, meter_rent=%s, "
-                       f"minimum_amount=%s WHERE {idc}=%s",
-                       (name, q2(rate), q2(meter_rent), q2(minimum_amount), int(row_id)))
+            db.execute(f"UPDATE {table} SET {namec}=%s, rate=%s, fixed_charge=%s, "
+                       f"meter_rent=%s, minimum_amount=%s WHERE {idc}=%s",
+                       (name, q2(rate), bool(fixed_charge), q2(meter_rent),
+                        q2(minimum_amount), int(row_id)))
         else:
             db.execute(f"UPDATE {table} SET {namec}=%s WHERE {idc}=%s", (name, int(row_id)))
 

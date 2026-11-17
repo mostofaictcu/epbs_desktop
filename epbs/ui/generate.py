@@ -308,12 +308,23 @@ class BillGenerateTab(QWidget):
 
         self.has_slabs = bool(consumer.get("slab_count"))
         self.has_override = consumer.get("rate_override") is not None
+        self.is_fixed = bool(consumer.get("type_fixed_charge"))
+        self.rate.setSuffix(" / bill" if self.is_fixed else " / unit")
+        self.rate.setToolTip(
+            "Fixed amount charged once for this bill. Change it here to bill this customer "
+            "a different fixed amount."
+            if self.is_fixed else
+            "Rate applied to this bill. Change it here to bill this customer "
+            "at a different rate.")
         self.flat_rate.blockSignals(True)
         self.flat_rate.setChecked(not self.has_slabs or self.has_override)
         self.flat_rate.blockSignals(False)
-        self.flat_rate.setVisible(self.has_slabs)
-        self.flat_rate.setEnabled(self.has_slabs and not self.has_override)
+        self.flat_rate.setVisible(self.has_slabs and not self.is_fixed)
+        self.flat_rate.setEnabled(self.has_slabs and not self.has_override and not self.is_fixed)
         self.tariff_note.setText(
+            (f"Fixed charge billing: {money(consumer.get('rate'))} is charged once per bill, "
+             "not multiplied by the units used.")
+            if self.is_fixed else
             f"Custom flat rate {money(consumer.get('rate'))}: the type slab tariff is bypassed."
             if self.has_override else
             (f"{consumer.get('slab_count')} slab(s) configured for "
@@ -345,7 +356,7 @@ class BillGenerateTab(QWidget):
 
     def _slab_mode(self) -> bool:
         return bool(self.consumer and self.has_slabs and not self.has_override
-                    and not self.flat_rate.isChecked())
+                    and not self.is_fixed and not self.flat_rate.isChecked())
 
     def _rate_mode_changed(self) -> None:
         slab_mode = self._slab_mode()
@@ -357,7 +368,8 @@ class BillGenerateTab(QWidget):
             self.rate.blockSignals(False)
         self.rate.setEnabled(not slab_mode)
         self.save_rate.setEnabled(not slab_mode)
-        caption = "Average rate" if slab_mode else "Rate"
+        caption = "Fixed charge" if getattr(self, "is_fixed", False) else (
+            "Average rate" if slab_mode else "Rate")
         self.rate_caption.setText(caption)
         self.summary_rate_caption.setText(caption)
         self._update_summary()
@@ -456,6 +468,9 @@ class BillGenerateTab(QWidget):
                 charge_line = (f"Units: {preview.get('units'):,} · calculated "
                                f"{money(preview.get('calculated_amount'))} · minimum charge "
                                f"{money(preview.get('bill_amount'))} applied")
+            elif preview.get("is_fixed"):
+                charge_line = (f"Fixed charge: {money(preview.get('bill_amount'))} per bill "
+                               f"({preview.get('units'):,} units read, not multiplied)")
             elif slabs:
                 charge_line = (f"Units: {preview.get('units'):,} · slab amount: "
                                f"{money(preview.get('bill_amount'))} "

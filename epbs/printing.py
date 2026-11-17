@@ -161,6 +161,7 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
 
     label = copy_label or ("Office copy" if not bill.get("print_count") else "Consumer copy")
     minimum_applied = bool(bill.get("minimum_charge"))
+    fixed_charge = bool(bill.get("fixed_charge"))
     detail_line = "; ".join(
         f"{d.get('bill_month') or ''} ({d.get('bill_details') or ''})"
         for d in details if d.get("bill_month")
@@ -179,6 +180,7 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
         rate=rate,
         detail_line=detail_line,
         minimum_applied=minimum_applied,
+        fixed_charge=fixed_charge,
         previous_unit="" if previous_unit is None else previous_unit,
         present_unit="" if present_unit is None else present_unit,
         signature_dashes="-" * (len("Authorised signature") + 3),
