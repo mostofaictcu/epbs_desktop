@@ -222,7 +222,10 @@ values are created automatically. Existing accounts are updated.
 
 1. Enter the meter number or account number and press search.
 2. The consumer details and the last reading are shown.
-3. Enter the present reading and date.
+3. Enter the present reading and date. Tick **Bookmark this last date
+   (continue billing)** to reuse the same last date for the next bills and
+   after restarting EPBS; it is stored in `config.ini`. Clear the box to start
+   each session from today's date.
 4. **Rate** starts at the consumer's current rate (override or type rate). When
    the type has a slab tariff, the rate is shown as the average for the units
    used and the summary lists each slab. Tick **Bill at a flat rate** to ignore

@@ -97,6 +97,8 @@ class AppConfig:
     show_print_dialog: bool = False
     auto_schema: bool = True       # create/upgrade schema when DB is empty
     bill_copy_label: str = ""
+    remember_last_date: bool = False
+    bookmarked_last_date: str = ""  # ISO yyyy-mm-dd, reused when remember_last_date
     path: Path = CONFIG_PATH
 
     def save(self, path: Path | None = None) -> Path:
@@ -120,6 +122,8 @@ class AppConfig:
             "show_print_dialog": "1" if self.show_print_dialog else "0",
             "auto_schema": "1" if self.auto_schema else "0",
             "bill_copy_label": self.bill_copy_label,
+            "remember_last_date": "1" if self.remember_last_date else "0",
+            "bookmarked_last_date": self.bookmarked_last_date,
         }
         target.write_text(
             "; EPBS Desktop configuration\n"
@@ -167,4 +171,6 @@ def load_config(path: Path | None = None) -> AppConfig:
     cfg.show_print_dialog = _bool(_get(cp, "app", "show_print_dialog", "0"))
     cfg.auto_schema = _bool(_get(cp, "app", "auto_schema", "1"), True)
     cfg.bill_copy_label = _get(cp, "app", "bill_copy_label", "")
+    cfg.remember_last_date = _bool(_get(cp, "app", "remember_last_date", "0"))
+    cfg.bookmarked_last_date = _get(cp, "app", "bookmarked_last_date", "")
     return cfg

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QDate, Qt
 from PySide6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QPushButton, QScrollArea, QSpinBox, QVBoxLayout, QWidget,
@@ -109,6 +109,12 @@ class BillGenerateTab(QWidget):
             self.month.addItem(label, value)
         self.issue_date = date_edit()
         self.last_date = date_edit()
+        self.remember_last_date = QCheckBox("Bookmark this last date (continue billing)")
+        self.remember_last_date.setToolTip(
+            "Keep this last date for the next bills you generate and after restarting EPBS. "
+            "Clear the box to start each session from today's date.")
+        self.remember_last_date.toggled.connect(self._last_date_preference_changed)
+        self.last_date.dateChanged.connect(self._last_date_preference_changed)
         self.meter_rent = QDoubleSpinBox()
         self.meter_rent.setRange(0, 100_000)
         self.meter_rent.setDecimals(2)
@@ -144,6 +150,7 @@ class BillGenerateTab(QWidget):
         form.addRow("Bill month", self.month)
         form.addRow("Issue date", self.issue_date)
         form.addRow("Last date", self.last_date)
+        form.addRow("", self.remember_last_date)
         self.rate_caption = QLabel("Rate")
         form.addRow(self.rate_caption, self.rate)
         form.addRow("", self.flat_rate)
@@ -230,6 +237,41 @@ class BillGenerateTab(QWidget):
         columns.addLayout(left, 3)
         columns.addLayout(right, 2)
         root.addLayout(columns, 1)
+        self._restore_last_date_preference()
+
+    # ------------------------------------------------------------------
+    def _restore_last_date_preference(self) -> None:
+        cfg = self.ctx.cfg
+        self.remember_last_date.blockSignals(True)
+        self.remember_last_date.setChecked(bool(cfg.remember_last_date))
+        self.remember_last_date.blockSignals(False)
+        if not cfg.remember_last_date:
+            return
+        bookmark = QDate.fromString(cfg.bookmarked_last_date or "", "yyyy-MM-dd")
+        if bookmark.isValid():
+            self.last_date.blockSignals(True)
+            self.last_date.setDate(bookmark)
+            self.last_date.blockSignals(False)
+
+    def _last_date_preference_changed(self, *_args) -> None:
+        self._store_last_date_preference()
+
+    def _store_last_date_preference(self) -> None:
+        """Persist the checkbox and (when ticked) the bookmarked last date."""
+        cfg = self.ctx.cfg
+        checked = self.remember_last_date.isChecked()
+        bookmark = to_date(self.last_date).isoformat()
+        if cfg.remember_last_date == checked and (
+                not checked or cfg.bookmarked_last_date == bookmark):
+            return
+        cfg.remember_last_date = checked
+        if checked:
+            cfg.bookmarked_last_date = bookmark
+        try:
+            cfg.save()
+        except Exception:
+            # A read-only config must never block billing.
+            pass
 
     # ------------------------------------------------------------------
     def reload_consumer(self) -> None:
@@ -455,6 +497,7 @@ class BillGenerateTab(QWidget):
         except Exception as exc:
             error(self, str(exc))
             return
+        self._store_last_date_preference()
         self.ctx.notify_change()
         self._load_consumer(int(self.consumer["con_id"]))
         if do_print:
