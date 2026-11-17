@@ -1,0 +1,20 @@
+body { font-family: 'Segoe UI','DejaVu Sans',Arial,sans-serif; color:#000; background:#fff;
+       margin:0; padding:0; }
+p, div, td, th, span { color:#000; }
+.title { font-size:{{ h1 }}pt; font-weight:bold; text-align:center; margin:0; }
+.sub { font-size:{{ small }}pt; text-align:center; margin:0; }
+h4 { font-size:{{ h2 }}pt; margin:2pt 0 0.5pt 0; font-weight:bold; }
+table { border-collapse:collapse; width:100%; }
+table.grid td, table.grid th { border:1px dashed #000; padding:0.7pt 2.5pt;
+     font-size:{{ body }}pt; vertical-align:top; }
+table.grid th { font-weight:bold; text-align:left; background:none; }
+table.plain td { padding:0.6pt 2pt; font-size:{{ body }}pt; vertical-align:top; }
+table.plain td.k { font-weight:bold; white-space:nowrap; }
+table.tot td { padding:0.8pt 3pt; font-size:{{ body }}pt; }
+table.tot td.k { font-weight:bold; text-align:right; }
+.right { text-align:right; }
+.center { text-align:center; }
+.mono { font-family:'Consolas','DejaVu Sans Mono',monospace; }
+.small { font-size:{{ small }}pt; }
+.sig { text-align:right; margin:0; line-height:1.1; }
+.footer { font-size:{{ small }}pt; margin-top:2pt; }

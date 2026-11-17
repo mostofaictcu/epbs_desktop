@@ -48,6 +48,7 @@ Python packages (`requirements.txt`):
 PySide6>=6.6
 psycopg[binary]>=3.1
 openpyxl>=3.1
+Jinja2>=3.1
 PyMySQL>=1.1      # only for the migration tool
 ```
 
@@ -297,7 +298,9 @@ the Windows print dialog behaves normally; only file generation is queued.
 
 ## 5. Printing and ink saving
 
-All documents are generated as HTML and rendered by Qt:
+All documents are written as **Jinja2 templates** in `epbs/templates/` and
+rendered by Qt. `printing.py` only prepares the data, so the layout and
+stylesheet can be redesigned without touching Python:
 
 - black text on white, no background colours or shaded headings;
 - **dashed** 1 px borders and compact padding instead of solid frames;
@@ -491,7 +494,14 @@ EPBS_Desktop/
     schema.py              PostgreSQL schema + seed data
     security.py            legacy reversible password cipher
     services.py            business logic, reports, Excel datasets, auth
-    printing.py            ink-saver HTML + Qt print/PDF
+    printing.py            document data + Qt print/PDF (renders the templates)
+    templates/
+      base.html            page skeleton shared by all documents
+      _header.html         company name, address and light grey logo
+      bill.html            half-A4 bill layout
+      statement.html       consumer statement layout
+      report.html          report table + footer totals
+      style.css            shared ink-saving print stylesheet
     excelio.py             workbook export, report export, consumer import
     jobs.py                background FIFO queue (one worker thread)
     theme.py               Qt style

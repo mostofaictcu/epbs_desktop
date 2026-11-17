@@ -1,0 +1,5 @@
+<div class="title">{{ company.name }}</div>
+<div class="sub">{{ company.address }}</div>
+{% if company.logo_url %}<div class="center"><img src="{{ company.logo_url }}" height="60" border="0" style="margin:2pt 0"></div>{% endif %}
+<div class="sub"><b>{{ title }}</b></div>
+{% if subtitle %}<div class="sub">{{ subtitle }}</div>{% endif %}

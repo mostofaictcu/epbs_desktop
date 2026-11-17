@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_header.html" %}
+<table class="plain" width="100%" cellspacing="0" cellpadding="2">
+  <tr><td class="k" width="14%">Account</td><td width="36%">{{ consumer.con_id }}</td>
+      <td class="k" width="14%">Name</td><td width="36%">{{ consumer.con_name }}</td></tr>
+  <tr><td class="k">Meter no</td><td>{{ consumer.meter_no }}</td>
+      <td class="k">Type / rate</td><td>{{ consumer.type_name }} / {{ consumer.rate|money }}</td></tr>
+  <tr><td class="k">Address</td><td colspan="3">{{ consumer.con_address }}</td></tr>
+</table>
+<h4>Bills</h4>
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr><th>Bill No</th><th>Date</th><th>Meter</th><th>Units</th>
+      <th>Bill</th><th>Due</th><th>Total</th><th>Status</th></tr>
+  {% if bills %}
+    {% for b in bills %}
+    <tr><td>{{ b.bill_no }}</td><td>{{ b.issue_date|date }}</td>
+        <td>{{ b.meter_no }}</td><td class="right">{{ b.units or 0 }}</td>
+        <td class="right">{{ b.bill_amount|money }}</td>
+        <td class="right">{{ b.due|money }}</td>
+        <td class="right">{{ b.total_amount|money }}</td>
+        <td>{{ b.bill_status }}</td></tr>
+    {% endfor %}
+  {% else %}
+    <tr><td colspan="8">No bills.</td></tr>
+  {% endif %}
+</table>
+<table class="tot" width="100%" cellspacing="0" cellpadding="0"><tr><td class="k">Outstanding total</td>
+    <td class="right"><b>{{ total_due|money }}</b></td></tr></table>
+<h4>Recent meter readings</h4>
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr><th>Previous date</th><th>Prev unit</th><th>Present date</th>
+      <th>Present unit</th><th>Units</th></tr>
+  {% if readings %}
+    {% for r in readings %}
+    <tr><td>{{ r.previous_date|date }}</td><td class="right">{{ r.previous_unit }}</td>
+        <td>{{ r.present_date|date }}</td><td class="right">{{ r.present_unit }}</td>
+        <td class="right">{{ r.units }}</td></tr>
+    {% endfor %}
+  {% else %}
+    <tr><td colspan="5">No readings.</td></tr>
+  {% endif %}
+</table>
+<h4>Recent payments</h4>
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr><th>Payment</th><th>Date</th><th>Bill No</th><th>Amount</th></tr>
+  {% if payments %}
+    {% for p in payments %}
+    <tr><td>{{ p.payment_id }}</td><td>{{ p.paid_date|date }}</td>
+        <td>{{ p.bill_no }}</td><td class="right">{{ p.bill_amount|money }}</td></tr>
+    {% endfor %}
+  {% else %}
+    <tr><td colspan="4">No payments.</td></tr>
+  {% endif %}
+</table>
+<div class="footer">Printed: {{ printed_at }}</div>
+{% endblock %}

@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_header.html" %}
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr>{% for h in headers %}<th>{{ h }}</th>{% endfor %}</tr>
+  {% if rows %}
+    {% for row in rows %}
+    <tr>{% for value in row %}{% if loop.index0 in money_cols %}<td class="right">{{ value|money }}</td>{% elif value is number and value is not boolean %}<td class="right">{{ value }}</td>{% else %}<td>{{ value }}</td>{% endif %}{% endfor %}</tr>
+    {% endfor %}
+  {% else %}
+    <tr><td colspan="{{ headers|length }}">No data.</td></tr>
+  {% endif %}
+</table>
+{% if footer_rows %}
+<table class="tot" width="45%" align="right" cellspacing="0" cellpadding="0">
+  {% for key, text in footer_rows %}
+  <tr><td class="k">{{ key }}</td><td class="right">{{ text }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+<div class="footer">Rows: {{ rows|length }} · Printed: {{ printed_at }}</div>
+{% endblock %}

@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block content %}
+{% include "_header.html" %}
+<table class="plain" width="100%" cellspacing="0" cellpadding="2">
+  <tr><td class="k" width="13%">Account</td><td width="37%">{{ consumer.con_id or bill.con_id }}</td>
+      <td class="k" width="13%">Bill date</td><td width="37%">{{ bill.issue_date|date }}</td></tr>
+  <tr><td class="k">Name</td><td>{{ consumer.con_name }}</td>
+      <td class="k">Last date</td><td>{{ bill.last_date|date }}</td></tr>
+  <tr><td class="k">Meter no</td><td>{{ bill.meter_no or consumer.meter_no }}</td>
+      <td class="k">Status</td><td>{{ bill.bill_status }}</td></tr>
+  <tr><td class="k">Type</td><td>{{ consumer.type_name }}</td>
+      <td class="k">Area</td><td>{{ consumer.area_details }}</td></tr>
+  <tr><td class="k">Address</td><td colspan="3">{{ consumer.con_address }}</td></tr>
+</table>
+<h4>Meter reading</h4>
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr><th>Previous date</th><th>Previous unit</th><th>Present date</th><th>Present unit</th>
+      <th>Units used</th><th>{% if slabs %}Average rate{% else %}Rate{% endif %}</th></tr>
+  <tr><td>{{ reading.previous_date|date }}</td><td class="right">{{ previous_unit }}</td>
+      <td>{{ reading.present_date|date }}</td><td class="right">{{ present_unit }}</td>
+      <td class="right"><b>{{ units }}</b></td><td class="right">{{ rate|money }}</td></tr>
+</table>
+{% if slabs %}
+<h4>Slab calculation</h4>
+<table class="grid" width="100%" border="1" cellspacing="0" cellpadding="2">
+  <tr><th>Slab</th><th>Range (units)</th><th>Units</th><th>Rate</th><th>Amount</th></tr>
+  {% for s in slabs %}
+  <tr><td>{{ s.slab_no }}</td>
+      <td class="right">{{ s|slab_range }}</td>
+      <td class="right">{{ s.units }}</td>
+      <td class="right">{{ s.rate|money }}</td>
+      <td class="right">{{ s.amount|money }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+<h4>Charges</h4>
+<table class="tot" width="100%" cellspacing="0" cellpadding="1">
+  <tr><td width="55%"></td><td class="k" width="25%">Meter rent</td><td class="right" width="20%">{{ bill.meter_rent|money }}</td></tr>
+  <tr><td></td><td class="k">{% if slabs %}Slab amount ({{ units }} units){% else %}Units used × rate ({{ units }} × {{ rate|money }}){% endif %}</td><td class="right">{{ bill.bill_amount|money }}</td></tr>
+  <tr><td></td><td class="k">Previous due</td><td class="right">{{ bill.due|money }}</td></tr>
+  <tr><td></td><td class="k"><b>TOTAL PAYABLE</b></td>
+      <td class="right"><b>{{ bill.total_amount|money }}</b></td></tr>
+</table>
+<div class="footer">
+  {% if detail_line %}<div>Bill lines: {{ detail_line }}</div>{% endif %}
+  <table width="100%" cellspacing="0" cellpadding="0"><tr>
+    <td width="62%" valign="bottom">Please pay on or before
+        <b>{{ bill.last_date|date }}</b>.
+        Printed: {{ printed_at }}</td>
+    <td width="38%" valign="bottom">
+      <div class="sig"><div>{{ signature_dashes }}</div>
+      <div class="small">{{ signature_label }}</div></div>
+    </td>
+  </tr></table>
+</div>
+{% endblock %}

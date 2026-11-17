@@ -1,5 +1,6 @@
 PySide6>=6.6
 psycopg[binary]>=3.1
 openpyxl>=3.1
+Jinja2>=3.1
 # only needed by tools/migrate_from_mysql.py
 PyMySQL>=1.1
