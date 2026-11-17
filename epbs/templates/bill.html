@@ -36,7 +36,7 @@
 <h4>Charges</h4>
 <table class="tot" width="100%" cellspacing="0" cellpadding="1">
   <tr><td width="55%"></td><td class="k" width="25%">Meter rent</td><td class="right" width="20%">{{ bill.meter_rent|money }}</td></tr>
-  <tr><td></td><td class="k">{% if slabs %}Slab amount ({{ units }} units){% else %}Units used × rate ({{ units }} × {{ rate|money }}){% endif %}</td><td class="right">{{ bill.bill_amount|money }}</td></tr>
+  <tr><td></td><td class="k">{% if minimum_applied %}Minimum charge{% elif slabs %}Slab amount ({{ units }} units){% else %}Units used × rate ({{ units }} × {{ rate|money }}){% endif %}</td><td class="right">{{ bill.bill_amount|money }}</td></tr>
   <tr><td></td><td class="k">Previous due</td><td class="right">{{ bill.due|money }}</td></tr>
   <tr><td></td><td class="k"><b>TOTAL PAYABLE</b></td>
       <td class="right"><b>{{ bill.total_amount|money }}</b></td></tr>

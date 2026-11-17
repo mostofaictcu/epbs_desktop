@@ -12,7 +12,8 @@ from .common import Table, confirm_delete, confirm_save, error, money, warn
 
 class MasterDialog(QDialog):
     def __init__(self, title: str, name: str = "", rate: float | None = None,
-                 with_rate: bool = False, meter_rent: float | None = None, parent=None):
+                 with_rate: bool = False, meter_rent: float | None = None,
+                 minimum_amount: float | None = None, parent=None):
         super().__init__(parent)
         self.setWindowTitle(title)
         self.setMinimumWidth(360)
@@ -31,11 +32,21 @@ class MasterDialog(QDialog):
         self.meter_rent.setDecimals(2)
         self.meter_rent.setValue(float(meter_rent or 0))
         self.meter_rent.setSuffix(" / bill")
+        self.minimum_amount = QDoubleSpinBox()
+        self.minimum_amount.setRange(0, 100000)
+        self.minimum_amount.setDecimals(2)
+        self.minimum_amount.setValue(float(minimum_amount or 0))
+        self.minimum_amount.setSuffix(" / bill")
+        self.minimum_amount.setToolTip("Minimum energy charge for one bill. When the calculated "
+                                       "amount is lower, this amount is billed instead. 0 = no "
+                                       "minimum. Meter rent and previous dues are added after it.")
         if with_rate:
             form.addRow("Flat rate", self.rate)
             form.addRow("Default meter rent", self.meter_rent)
+            form.addRow("Minimum amount", self.minimum_amount)
             note = QLabel("Slabs are optional. A type with no slabs is billed at the flat rate. "
-                          "Meter rent is added once to every bill and defaults to 0.")
+                          "Meter rent is added once to every bill and defaults to 0. A minimum "
+                          "amount raises a lower calculated charge to the minimum; 0 disables it.")
             note.setObjectName("muted")
             note.setWordWrap(True)
             form.addRow("", note)
@@ -52,10 +63,11 @@ class MasterDialog(QDialog):
             return
         self.accept()
 
-    def values(self) -> tuple[str, float | None, float | None]:
+    def values(self) -> tuple[str, float | None, float | None, float | None]:
         return (self.name.text().strip(),
                 (self.rate.value() if self.with_rate else None),
-                (self.meter_rent.value() if self.with_rate else None))
+                (self.meter_rent.value() if self.with_rate else None),
+                (self.minimum_amount.value() if self.with_rate else None))
 
 
 class SlabDialog(QDialog):
@@ -70,8 +82,11 @@ class SlabDialog(QDialog):
         self.resize(620, 430)
         self._rows: list[dict] = []
         root = QVBoxLayout(self)
+        minimum = float(type_row.get("minimum_amount") or 0)
         head = QLabel(
-            f"<b>{self.type_name}</b> · slab tariff<br>"
+            f"<b>{self.type_name}</b> · slab tariff"
+            + (f" · minimum amount {money(minimum)}" if minimum else "")
+            + "<br>"
             "Each slab applies to the units above the previous slab's end. "
             "Example: 500 units with 0-400 @ 7.48 and 401-600 @ 10.20 = "
             "400 × 7.48 + 100 × 10.20."
@@ -269,7 +284,8 @@ class MasterPane(QWidget):
         root.addLayout(buttons)
 
         hint = QLabel("Changes are saved immediately. An item used by a consumer "
-                      "cannot be deleted. Types can use a flat rate or a slab tariff.")
+                      "cannot be deleted. Types can use a flat rate or a slab tariff, "
+                      "plus an optional minimum amount per bill.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -285,9 +301,9 @@ class MasterPane(QWidget):
             return
         headers = ["ID", self._name_header]
         if self.with_rate:
-            headers += ["Flat rate", "Meter rent", "Slabs"]
-            money_cols = {2, 3}
-            right_cols = {4}
+            headers += ["Flat rate", "Meter rent", "Minimum", "Slabs"]
+            money_cols = {2, 3, 4}
+            right_cols = {5}
         else:
             headers.append("Used by")
             money_cols = set()
@@ -297,7 +313,7 @@ class MasterPane(QWidget):
             values = [row["id"], row["name"]]
             if self.with_rate:
                 values += [row.get("rate"), row.get("meter_rent") or 0,
-                           row.get("slabs") or 0]
+                           row.get("minimum_amount") or 0, row.get("slabs") or 0]
             else:
                 values.append(row.get("used"))
             data.append(values)
@@ -317,14 +333,16 @@ class MasterPane(QWidget):
                               parent=self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate, meter_rent = dialog.values()
+        name, rate, meter_rent, minimum_amount = dialog.values()
         detail = f"Add {self._name_header.lower()} '{name}'"
         if self.with_rate:
-            detail += f" with flat rate {rate:.2f} and meter rent {meter_rent:.2f}"
+            detail += (f" with flat rate {rate:.2f}, meter rent {meter_rent:.2f} "
+                       f"and minimum amount {minimum_amount:.2f}")
         if not confirm_save(self, detail + "?"):
             return
         try:
-            services.add_master_row(self.ctx.db, self.kind, name, rate, meter_rent)
+            services.add_master_row(self.ctx.db, self.kind, name, rate, meter_rent,
+                                    minimum_amount)
         except Exception as exc:
             error(self, str(exc))
             return
@@ -338,22 +356,27 @@ class MasterPane(QWidget):
             return
         dialog = MasterDialog(f"Edit {self._name_header.lower()}", str(row["name"]),
                               float(row.get("rate") or 0), self.with_rate,
-                              float(row.get("meter_rent") or 0), self)
+                              float(row.get("meter_rent") or 0),
+                              float(row.get("minimum_amount") or 0), self)
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
-        name, rate, meter_rent = dialog.values()
+        name, rate, meter_rent, minimum_amount = dialog.values()
         detail = f"Change {self._name_header.lower()} '{row['name']}' to '{name}'"
         if self.with_rate and float(row.get("rate") or 0) != float(rate or 0):
             detail += f"\n\nFlat rate: {money(row.get('rate'))} → {money(rate)}"
         if self.with_rate and float(row.get("meter_rent") or 0) != float(meter_rent or 0):
             detail += f"\nMeter rent: {money(row.get('meter_rent'))} → {money(meter_rent)}"
+        if (self.with_rate
+                and float(row.get("minimum_amount") or 0) != float(minimum_amount or 0)):
+            detail += (f"\nMinimum amount: {money(row.get('minimum_amount'))} → "
+                       f"{money(minimum_amount)}")
         if self.kind == "group":
             detail += "\n\nEvery consumer using this group will be updated."
         if not confirm_save(self, detail + "?"):
             return
         try:
             services.update_master_row(self.ctx.db, self.kind, int(row["id"]), name, rate,
-                                       meter_rent)
+                                       meter_rent, minimum_amount)
         except Exception as exc:
             error(self, str(exc))
             return

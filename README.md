@@ -156,8 +156,9 @@ login dialog and Home banner plays the animation built into `logo.svg` once
 **Master data** tab edits the lists used by the consumer form. The **Settings**
 tab has an **Edit master data...** shortcut to the same screen:
 
-- **Types** – name, flat rate, default meter rent and optional slabs (for
-  example `RES-QUATER`). A type with no slabs is billed at the flat rate.
+- **Types** – name, flat rate, default meter rent, minimum amount and optional
+  slabs (for example `RES-QUATER`). A type with no slabs is billed at the flat
+  rate.
 - **Areas**, **Departments**, **Designations** – plain name lists.
 - **Groups** – consumer groups, with a count of how many consumers use each one.
 
@@ -168,6 +169,13 @@ slab may be left open-ended (To = *No upper limit*); otherwise consumption above
 the last ended slab continues at that slab's rate. Meter rent is a fixed amount
 added once to the bill and defaults to `0` per type. A per-consumer rate
 override bypasses the slab tariff and bills that consumer at one flat rate.
+
+Each type also has an optional **minimum amount** (default `0` = no minimum).
+If the calculated energy charge is lower than the minimum, the bill uses the
+minimum instead — for example a calculated `200.00` with a `750.00` minimum is
+billed at `750.00`. Meter rent and previous dues are added after the minimum.
+The applied minimum is stored on the bill (`tbl_bills.minimum_charge`) and
+shown as **Minimum charge** on the printed bill.
 
 Use **Add**, **Edit** (or double-click) and **Delete**. Names are matched
 case-insensitively, so adding an existing name selects the existing row instead
@@ -222,7 +230,9 @@ values are created automatically. Existing accounts are updated.
    by default) also stores a flat rate as the consumer's own rate; clear the
    box to use the rate only for this bill.
 5. The summary shows previous/present units, **units used**, the slab breakdown
-   (or flat rate), bill amount, previous due, meter rent and **total payable**.
+   (or flat rate), bill amount, minimum amount, previous due, meter rent and
+   **total payable**. When the calculated charge is below the type's minimum,
+   the bill amount is raised to the minimum and the summary explains why.
    Meter rent starts at the selected type's own default (normally `0`).
 6. **Generate bill** saves the bill; **Print** / **PDF** output the ink-saver
    bill. A bill can also be printed later from **Bills & payments**.
@@ -340,9 +350,10 @@ document renders reliably in Qt; other custom formats are used as-is.
   each time.
 - **Font size**, **paper size** (reports and statements; bills print as
   half-A4 sections on A4 portrait sheets unless the receipt roll is selected),
-  **copy label**. Meter rent is
-  not a global setting: each consumer type has its own meter rent (default 0),
-  and it can be changed for a single bill on the **Generate bill** page.
+  **copy label**. Meter rent and the minimum amount are
+  not global settings: each consumer type has its own values (default 0).
+  Meter rent can still be changed for a single bill on the **Generate bill**
+  page.
 
 PDF export uses the same HTML and the same two-up renderer as the printer, so
 the PDF page and the printed page are identical (A4 portrait, two bills, cut

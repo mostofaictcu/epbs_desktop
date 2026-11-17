@@ -200,6 +200,7 @@ class BillGenerateTab(QWidget):
         self.prev_label = QLabel("-")
         self.rate_label = QLabel("0.00")
         self.amount_label = QLabel("0.00")
+        self.minimum_label = QLabel("—")
         self.due_label = QLabel("0.00")
         self.rent_label = QLabel("0.00")
         self.total_label = QLabel("0.00")
@@ -208,10 +209,16 @@ class BillGenerateTab(QWidget):
         grid.addRow("Previous unit", self.prev_label)
         grid.addRow(self.summary_rate_caption, self.rate_label)
         grid.addRow("This bill", self.amount_label)
+        grid.addRow("Minimum amount", self.minimum_label)
         grid.addRow("Previous due", self.due_label)
         grid.addRow("Meter rent", self.rent_label)
         grid.addRow("Total payable", self.total_label)
         sl.addLayout(grid)
+        self.minimum_note = QLabel("")
+        self.minimum_note.setObjectName("muted")
+        self.minimum_note.setWordWrap(True)
+        self.minimum_note.setVisible(False)
+        sl.addWidget(self.minimum_note)
         self.warning = QLabel("")
         self.warning.setObjectName("warning")
         self.warning.setWordWrap(True)
@@ -273,6 +280,12 @@ class BillGenerateTab(QWidget):
              if self.has_slabs else
              "Flat-rate billing: units × rate.")
         )
+        minimum = float(consumer.get("type_minimum_amount") or 0)
+        if minimum:
+            self.tariff_note.setText(
+                self.tariff_note.text()
+                + f" Minimum amount {money(minimum)}: a lower calculated charge is billed at "
+                  "this minimum.")
         self._rate_mode_changed()
         self._load_recent(con_id)
 
@@ -315,6 +328,8 @@ class BillGenerateTab(QWidget):
             for label in (self.prev_label, self.rate_label, self.amount_label, self.due_label,
                           self.rent_label, self.total_label):
                 label.setText("0.00")
+            self.minimum_label.setText("—")
+            self.minimum_note.setVisible(False)
             self.warning.setText("")
             self._set_enabled(False)
             return
@@ -323,6 +338,8 @@ class BillGenerateTab(QWidget):
         if units < 0:
             self.units_label.setText(f"{units:,}")
             self.prev_label.setText(f"{self.previous_unit:,}")
+            self.minimum_label.setText("—")
+            self.minimum_note.setVisible(False)
             self.warning.setText(f"Present unit is below the previous reading ({self.previous_unit:,}). "
                                  "Correct the reading in Unit / Rate change first.")
             self._set_enabled(False)
@@ -335,6 +352,8 @@ class BillGenerateTab(QWidget):
                 None if slab_mode else float(self.rate.value()),
             )
         except Exception as exc:
+            self.minimum_label.setText("—")
+            self.minimum_note.setVisible(False)
             self.warning.setText(str(exc))
             self._set_enabled(False)
             return
@@ -346,6 +365,15 @@ class BillGenerateTab(QWidget):
         self.prev_label.setText(f"{self.previous_unit:,}")
         self.rate_label.setText(money(preview.get("rate")))
         self.amount_label.setText(money(preview.get("bill_amount")))
+        minimum = preview.get("minimum") or 0
+        self.minimum_label.setText(money(minimum) if minimum else "—")
+        if preview.get("minimum_charge"):
+            self.minimum_note.setText(
+                f"Calculated charge {money(preview.get('calculated_amount'))} is below the type "
+                f"minimum, so {money(preview.get('bill_amount'))} will be billed.")
+            self.minimum_note.setVisible(True)
+        else:
+            self.minimum_note.setVisible(False)
         self.due_label.setText(money(preview.get("due")))
         self.rent_label.setText(money(preview.get("meter_rent")))
         self.total_label.setText(money(preview.get("total")))
@@ -382,7 +410,11 @@ class BillGenerateTab(QWidget):
             if save_rate and preview.get("rate") != preview.get("consumer", {}).get("rate"):
                 rate_note = "\nNew customer rate will be saved."
             slabs = preview.get("slabs") or []
-            if slabs:
+            if preview.get("minimum_charge"):
+                charge_line = (f"Units: {preview.get('units'):,} · calculated "
+                               f"{money(preview.get('calculated_amount'))} · minimum charge "
+                               f"{money(preview.get('bill_amount'))} applied")
+            elif slabs:
                 charge_line = (f"Units: {preview.get('units'):,} · slab amount: "
                                f"{money(preview.get('bill_amount'))} "
                                f"(average {money(preview.get('rate'))}/unit)\n")
