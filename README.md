@@ -300,10 +300,19 @@ the Windows print dialog behaves normally; only file generation is queued.
 All documents are generated as HTML and rendered by Qt:
 
 - black text on white, no background colours or shaded headings;
-- 0.6 pt borders and compact padding;
+- **dashed** 1 px borders and compact padding instead of solid frames;
 - body font defaults to 8 pt (6–12 pt can be configured), small margins;
-- A4, A5, Letter or 80 mm receipt paper;
-- company logo in the bill, statement and report headers.
+- A4, A5, Letter or 80 mm receipt paper for reports and statements;
+- **bills print on A4 portrait sheets** with dashed 1 px borders and compact
+  spacing to save ink;
+- a single bill prints **once in the top half** of an A4 portrait sheet; the
+  bottom half stays blank, separated by a labelled dashed **CUT HERE** line,
+  so the sheet can be cut and the free half reused for another bill;
+- **Print selected bills** places two different bills on one A4 sheet with the
+  same cut line (an odd last bill leaves the bottom half free);
+- the printed logo is converted to a light grey, **centred below the company
+  name and address** and printed larger (60 px) so it stays readable in the PDF;
+- the signature line is dashed and sized to the signature text.
 
 ### Company logo
 
@@ -326,12 +335,16 @@ document renders reliably in Qt; other custom formats are used as-is.
 - **Show print dialog** – when off, **Print** sends the document directly to
   the chosen/default printer. Turn it on to choose a printer or page range
   each time.
-- **Font size**, **paper size**, **copy label**. Meter rent is not a global
-  setting: each consumer type has its own meter rent (default 0), and it can be
-  changed for a single bill on the **Generate bill** page.
+- **Font size**, **paper size** (reports and statements; bills print as
+  half-A4 sections on A4 portrait sheets unless the receipt roll is selected),
+  **copy label**. Meter rent is
+  not a global setting: each consumer type has its own meter rent (default 0),
+  and it can be changed for a single bill on the **Generate bill** page.
 
-PDF export uses the same layout and does not need a printer. A PDF is written
-to the path chosen in the save dialog.
+PDF export uses the same HTML and the same two-up renderer as the printer, so
+the PDF page and the printed page are identical (A4 portrait, two bills, cut
+line and logo included). No printer is needed. A confirmation dialog shows the
+full path of every PDF that is saved.
 
 ## 6. Excel database export / import
 

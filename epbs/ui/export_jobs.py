@@ -130,10 +130,17 @@ def bill_pdf(cfg: AppConfig, bill_no: int, company: dict, font_pt: float,
         consumer = data.get("consumer") or {}
         payload = dict(data)
         payload["rate"] = consumer.get("rate")
-        html = printing.bill_html(payload, company, font_pt, copy_label)
-        log("Rendering the PDF…")
-        ok, message = printing.pdf_from_html(html, path, paper=cfg.paper,
-                                             document_name=f"Bill {bill_no}")
+        if cfg.paper == "Receipt 80mm":
+            html = printing.bill_html(payload, company, font_pt, copy_label)
+            log("Rendering the receipt PDF…")
+            ok, message = printing.pdf_from_html(
+                html, path, paper="Receipt 80mm",
+                document_name=f"Bill {bill_no}")
+        else:
+            html = printing.bill_html(payload, company, font_pt, copy_label)
+            log("Rendering the A4 half-sheet PDF (cut line included)…")
+            ok, message = printing.pdf_documents_2up(
+                [html], path, document_name=f"Bill {bill_no}")
         if not ok:
             raise RuntimeError(message)
         return _summary("Bill PDF saved", path, None,

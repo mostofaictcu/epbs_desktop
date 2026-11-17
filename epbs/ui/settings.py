@@ -212,11 +212,14 @@ class SettingsTab(QWidget):
         self.show_dialog = QCheckBox("Show the Windows print dialog before printing")
         self.show_dialog.setChecked(ctx.cfg.show_print_dialog)
         pf.addRow("Printer", self.printer)
-        pf.addRow("Paper", self.paper)
+        pf.addRow("Paper (reports)", self.paper)
         pf.addRow("Font size", self.font_pt)
         pf.addRow("Bill copy label", self.copy_label)
         pf.addRow("", self.show_dialog)
-        hint = QLabel("Bills are printed in black on white: thin borders, small font, no background fills.")
+        hint = QLabel("Bills print on A4 portrait sheets with dashed borders, a light grey "
+                      "centred logo and a labelled CUT HERE line. A single bill uses the top "
+                      "half (the bottom half stays free for reuse); selected bills print two "
+                      "per sheet.")
         hint.setObjectName("muted")
         hint.setWordWrap(True)
         pf.addRow(hint)

@@ -8,7 +8,7 @@ from PySide6.QtWidgets import (
 
 from .. import services
 from .common import Pager, Table, date_edit, error, money, to_date, warn
-from .documents import print_report
+from .documents import pdf_done, print_report
 from .export_jobs import database_excel, report_excel, report_pdf
 
 REPORTS = [
@@ -206,7 +206,8 @@ class ReportsTab(QWidget):
             self.ctx.jobs.submit(
                 f"Report PDF — {title}",
                 lambda log: report_pdf(self.ctx.cfg, filters, subtitle, company,
-                                       font_pt, path, log))
+                                       font_pt, path, log),
+                on_done=pdf_done(self, f"Report PDF — {title}"))
             return
         try:
             result = self._all_result()

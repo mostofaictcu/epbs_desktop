@@ -1,13 +1,15 @@
 """Ink-saving HTML documents + direct printing / PDF output via Qt."""
 from __future__ import annotations
 
+import hashlib
 import html as _html
+import tempfile
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from PySide6.QtCore import QMarginsF, QSizeF, Qt, QUrl
-from PySide6.QtGui import QFont, QPageLayout, QPageSize, QTextDocument
+from PySide6.QtCore import QMarginsF, QPointF, QRectF, QSizeF, Qt, QUrl
+from PySide6.QtGui import QColor, QFont, QImage, QPageLayout, QPageSize, QPainter, QPen, QTextDocument
 from PySide6.QtPrintSupport import QPrintDialog, QPrinter, QPrinterInfo
 from PySide6.QtWidgets import QApplication
 
@@ -41,35 +43,75 @@ def _slab_range(slab: dict) -> str:
 
 
 def _logo_url(path: str | None) -> str:
-    """Document logo: the configured file, else ``static/images/company_logo.jpg``."""
+    """Document logo: the configured file, else ``static/images/company_logo.jpg``.
+
+    The printed copy is converted to a light grey so dark logos use much less
+    ink; the result is cached in the temporary folder until the source changes.
+    """
     p = resolve_logo(path, print_ready=True)
     if not p:
         return ""
-    return QUrl.fromLocalFile(str(p.resolve())).toString()
+    src = p.resolve()
+    try:
+        stat = src.stat()
+        key = hashlib.sha1(
+            f"{src}|{stat.st_mtime_ns}|{stat.st_size}".encode()).hexdigest()[:16]
+    except OSError:
+        key = hashlib.sha1(str(src).encode()).hexdigest()[:16]
+    out = Path(tempfile.gettempdir()) / f"epbs_print_logo_{key}.png"
+    if not out.is_file():
+        img = QImage(str(src))
+        if img.isNull():
+            return QUrl.fromLocalFile(str(src)).toString()
+        if img.height() > 160:
+            img = img.scaledToHeight(160, Qt.TransformationMode.SmoothTransformation)
+        img = img.convertToFormat(QImage.Format.Format_Grayscale8)
+        # Black -> ~50% grey; grey/white detail stays readable.
+        lut = bytes(int(255 - (255 - v) * 0.5) for v in range(256))
+        width, height, stride = img.width(), img.height(), img.bytesPerLine()
+        raw = bytes(img.bits())
+        light = bytearray(raw)
+        for y in range(height):
+            base = y * stride
+            for x in range(width):
+                light[base + x] = lut[raw[base + x]]
+        light_img = QImage(bytes(light), width, height, stride,
+                           QImage.Format.Format_Grayscale8).copy()
+        try:
+            if not light_img.save(str(out), "PNG"):
+                return QUrl.fromLocalFile(str(src)).toString()
+        except Exception:
+            return QUrl.fromLocalFile(str(src)).toString()
+    return QUrl.fromLocalFile(str(out)).toString()
+
+
+def _signature(label: str = "Authorised signature") -> str:
+    """Dashed signature line: label length + 3 dashes, as requested."""
+    return (f'<div class="sig"><div>{"-" * (len(label) + 3)}</div>'
+            f'<div class="small">{esc(label)}</div></div>')
 
 
 _CSS = """
 body { font-family: 'Segoe UI','DejaVu Sans',Arial,sans-serif; color:#000; background:#fff;
        margin:0; padding:0; }
 p, div, td, th, span { color:#000; }
-.title { font-size:%(h1).1fpt; font-weight:bold; text-align:center; margin:0 0 1pt 0; }
-.sub { font-size:%(small).1fpt; text-align:center; margin:0 0 2pt 0; }
-h4 { font-size:%(h2).1fpt; margin:4pt 0 2pt 0; font-weight:bold; border-bottom:0.6pt solid #000;
-     padding-bottom:1pt; }
+.title { font-size:%(h1).1fpt; font-weight:bold; text-align:center; margin:0; }
+.sub { font-size:%(small).1fpt; text-align:center; margin:0; }
+h4 { font-size:%(h2).1fpt; margin:2pt 0 0.5pt 0; font-weight:bold; }
 table { border-collapse:collapse; width:100%%; }
-table.grid td, table.grid th { border:0.6pt solid #000; padding:1.2pt 3pt; font-size:%(body).1fpt;
-     vertical-align:top; }
+table.grid td, table.grid th { border:1px dashed #000; padding:0.7pt 2.5pt;
+     font-size:%(body).1fpt; vertical-align:top; }
 table.grid th { font-weight:bold; text-align:left; background:none; }
-table.plain td { padding:0.8pt 2pt; font-size:%(body).1fpt; vertical-align:top; }
+table.plain td { padding:0.6pt 2pt; font-size:%(body).1fpt; vertical-align:top; }
 table.plain td.k { font-weight:bold; white-space:nowrap; }
-table.tot td { padding:1pt 3pt; font-size:%(body).1fpt; }
+table.tot td { padding:0.8pt 3pt; font-size:%(body).1fpt; }
 table.tot td.k { font-weight:bold; text-align:right; }
 .right { text-align:right; }
 .center { text-align:center; }
 .mono { font-family:'Consolas','DejaVu Sans Mono',monospace; }
 .small { font-size:%(small).1fpt; }
-.line { border-top:0.6pt solid #000; margin:4pt 0; }
-.footer { font-size:%(small).1fpt; margin-top:3pt; }
+.sig { text-align:right; margin:0; line-height:1.1; }
+.footer { font-size:%(small).1fpt; margin-top:2pt; }
 """
 
 
@@ -79,24 +121,27 @@ def _css(font_pt: float) -> str:
 
 
 def _company_header(company: dict, title: str, subtitle: str, font_pt: float, logo: bool = True) -> str:
-    logo_html = ""
-    url = _logo_url(company.get("logo_url"))
-    if logo and url:
-        logo_html = (f'<img src="{esc(url)}" height="42" border="0" '
-                     f'style="float:left;margin-right:6pt">')
+    url = _logo_url(company.get("logo_url")) if logo else ""
+    img = (f'<div class="center"><img src="{esc(url)}" height="60" border="0" '
+           f'style="margin:2pt 0"></div>' if url else "")
     addr = " · ".join(x for x in [
         company.get("company_address"), company.get("contact_no"),
         company.get("email"), company.get("website")] if x)
     return f"""
-    <div>{logo_html}
-      <div class="title">{esc(company.get('company_name') or 'EPBS')}</div>
-      <div class="sub">{esc(addr)}</div>
-      <div class="sub"><b>{esc(title)}</b></div>
-      {f'<div class="sub">{esc(subtitle)}</div>' if subtitle else ''}
-    </div>"""
+    <div class="title">{esc(company.get('company_name') or 'EPBS')}</div>
+    <div class="sub">{esc(addr)}</div>
+    {img}
+    <div class="sub"><b>{esc(title)}</b></div>
+    {f'<div class="sub">{esc(subtitle)}</div>' if subtitle else ''}"""
+
+
+def _bill_font(font_pt: float) -> float:
+    """Bills are half-page documents: half a point smaller saves height and ink."""
+    return max(6.0, float(font_pt) - 0.5)
 
 
 def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str = "") -> str:
+    font_pt = _bill_font(font_pt)
     bill = data["bill"]
     c = data.get("consumer") or {}
     readings = data.get("readings") or []
@@ -133,8 +178,9 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
     </table>"""
 
     return f"""<html><head><meta charset="utf-8"><style>{_css(font_pt)}</style></head><body>
-    {_company_header(company, 'ELECTRICITY BILL', f'Bill No: {bill.get("bill_no")}', font_pt)}
-    <div class="small center">{esc(label)} · Issued {esc(fmt_date(bill.get('issue_date')))}</div>
+    {_company_header(company, 'ELECTRICITY BILL',
+                     f'Bill No: {bill.get("bill_no")} · {label} · '
+                     f'Issued {fmt_date(bill.get("issue_date"))}', font_pt)}
     <table class="plain" width="100%" cellspacing="0" cellpadding="2">
       <tr><td class="k" width="13%">Account</td><td width="37%">{esc(c.get('con_id') or bill.get('con_id'))}</td>
           <td class="k" width="13%">Bill date</td><td width="37%">{esc(fmt_date(bill.get('issue_date')))}</td></tr>
@@ -165,9 +211,12 @@ def bill_html(data: dict, company: dict, font_pt: float = 8.0, copy_label: str =
     </table>
     <div class="footer">
       {f'<div>Bill lines: {esc(detail_line)}</div>' if detail_line else ''}
-      <div>Please pay on or before <b>{esc(fmt_date(bill.get('last_date')))}</b>.
-           Printed: {esc(datetime.now().strftime('%d-%b-%Y %H:%M'))}</div>
-      <div style="margin-top:10pt">Authorised signature ______________________</div>
+      <table width="100%" cellspacing="0" cellpadding="0"><tr>
+        <td width="62%" valign="bottom">Please pay on or before
+            <b>{esc(fmt_date(bill.get('last_date')))}</b>.
+            Printed: {esc(datetime.now().strftime('%d-%b-%Y %H:%M'))}</td>
+        <td width="38%" valign="bottom">{_signature()}</td>
+      </tr></table>
     </div>
     </body></html>"""
 
@@ -328,6 +377,150 @@ def print_document(html_text: str, *, paper: str = "A4", printer_name: str = "",
     QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
     try:
         doc.print_(printer)
+    except Exception as exc:
+        return False, str(exc)
+    finally:
+        QApplication.restoreOverrideCursor()
+
+    if pdf_path:
+        p = Path(pdf_path)
+        if not p.exists() or p.stat().st_size == 0:
+            return False, f"PDF was not created: {p}"
+        return True, str(p)
+    return True, "Sent to printer"
+
+
+def _paint_2up(printer: QPrinter, html_texts: list[str]) -> None:
+    """Draw two half-page documents plus a labelled cut line on each sheet."""
+    page = printer.pageRect(QPrinter.Unit.Point)
+    full_w, full_h = page.width(), page.height()
+    margin = 8 / 25.4 * 72.0            # 8 mm content margin
+    content_w = full_w - 2 * margin
+    content_h = full_h - 2 * margin
+    gap = 16.0
+    half = (content_h - gap) / 2.0
+    # QPrinter in HighResolution mode paints in device pixels; documents are
+    # laid out in points, so scale the painter to 72 dpi logical units.
+    dpi_scale = printer.logicalDpiX() / 72.0
+
+    painter = QPainter(printer)
+    try:
+        for start in range(0, len(html_texts), 2):
+            if start:
+                printer.newPage()
+            painter.save()
+            painter.scale(dpi_scale, dpi_scale)
+            pair = html_texts[start:start + 2]
+            docs = []
+            for html in pair:
+                doc = QTextDocument()
+                doc.setDocumentMargin(0)
+                doc.setDefaultFont(QFont("Segoe UI", max(6, int(round(8)))))
+                doc.setHtml(html)
+                doc.setPageSize(QSizeF(content_w, half))
+                docs.append((doc, doc.size().height()))
+
+            # One scale for the whole sheet so both bills look identical.
+            tallest = max((doc_h for _doc, doc_h in docs), default=half)
+            fit = min(1.0, half / tallest) if tallest > 0 else 1.0
+            for slot, (doc, doc_h) in enumerate(docs):
+                top = margin + slot * (half + gap)
+                painter.save()
+                painter.setClipRect(QRectF(margin, top, content_w, half))
+                painter.translate(margin, top)
+                if fit < 1.0:
+                    painter.scale(fit, fit)
+                    painter.translate((content_w / fit - content_w) / 2, 0)
+                doc.drawContents(painter, QRectF(0, 0, content_w, doc_h))
+                painter.restore()
+
+            # Dashed cut line (paper edge to paper edge) with a clear label.
+            y = margin + half + gap / 2.0
+            painter.setPen(QPen(QColor("#000000"), 0.7, Qt.PenStyle.DashLine))
+            painter.drawLine(QPointF(0, y), QPointF(full_w, y))
+            cut_font = QFont("Segoe UI")
+            cut_font.setPixelSize(8)
+            painter.setFont(cut_font)
+            metrics = painter.fontMetrics()
+            text = "CUT HERE"
+            box = QRectF((full_w - metrics.horizontalAdvance(text)) / 2.0 - 5,
+                         y - metrics.height() / 2.0 - 1,
+                         metrics.horizontalAdvance(text) + 10,
+                         metrics.height() + 2)
+            painter.fillRect(box, QColor("#ffffff"))
+            painter.setPen(QPen(QColor("#000000"), 0.7))
+            painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+            painter.restore()
+    finally:
+        painter.end()
+
+
+def pdf_documents_2up(html_texts: list[str], path: str | Path, *,
+                      document_name: str = "EPBS bills") -> tuple[bool, str]:
+    """Write half-page documents to an A4 portrait PDF, two per sheet.
+
+    Safe to call from a worker thread: no dialog and no cursor override.
+    """
+    if not QApplication.instance():
+        return False, "Qt application is not running."
+    if not html_texts:
+        return False, "No documents to print."
+
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setDocName(document_name)
+    printer.setFullPage(True)
+    printer.setPageSize(_page_size("A4"))
+    printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+    printer.setOutputFileName(str(path))
+
+    try:
+        _paint_2up(printer, html_texts)
+    except Exception as exc:
+        return False, str(exc)
+
+    p = Path(path)
+    if not p.exists() or p.stat().st_size == 0:
+        return False, f"PDF was not created: {p}"
+    return True, str(p)
+
+
+def print_documents_2up(html_texts: list[str], *, printer_name: str = "",
+                        pdf_path: str | Path | None = None, show_dialog: bool = False,
+                        document_name: str = "EPBS bills") -> tuple[bool, str]:
+    """Print half-page documents two per A4 portrait sheet.
+
+    Each document is drawn into one half of the printable A4 area, with a
+    labelled dashed cut line between the halves.  An odd number of documents
+    leaves the bottom half empty; it can still be cut and reused.
+    """
+    if not QApplication.instance():
+        return False, "Qt application is not running."
+    if not html_texts:
+        return False, "No documents to print."
+
+    printer = QPrinter(QPrinter.PrinterMode.HighResolution)
+    printer.setDocName(document_name)
+    printer.setFullPage(True)
+    printer.setPageSize(_page_size("A4"))
+
+    if pdf_path:
+        printer.setOutputFormat(QPrinter.OutputFormat.PdfFormat)
+        printer.setOutputFileName(str(pdf_path))
+    else:
+        available = {p.printerName() for p in QPrinterInfo.availablePrinters()}
+        if printer_name and printer_name in available:
+            printer.setPrinterName(printer_name)
+        elif QPrinterInfo.defaultPrinter().isNull():
+            return False, "No printer is installed on this computer."
+        if show_dialog:
+            dialog = QPrintDialog(printer)
+            dialog.setWindowTitle("Print bill(s)")
+            if not dialog.exec():
+                return False, "Printing cancelled."
+
+    QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+    try:
+        _paint_2up(printer, html_texts)
     except Exception as exc:
         return False, str(exc)
     finally:
